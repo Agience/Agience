@@ -10,9 +10,9 @@ Think of it as Git + a graph database + an agent runtime, but for decisions and 
 
 ## What This Is
 
-Most AI tooling gives you a chat interface on top of documents. Agience gives you a **shared state layer**: typed, versioned, auditable information that both humans and agents can read, write, and reason about within the same system.
+Most AI tooling gives you a chat interface on top of documents. Agience gives you a **shared state layer** --- typed, versioned, auditable information that both humans and agents can read, write, and reason about within the same system.
 
-The core unit is the **artifact**: not a file, not a prompt, not a chat message. An artifact has typed content, structured metadata, a stable ID, a commit history, and a reference to the transform that produced it. Agents and humans operate on the same artifacts. The same object a human curates in the UI is the object an agent reads via MCP.
+The core unit is the **artifact**, not a file, not a prompt, not a chat message. An artifact has typed content, structured metadata, a stable ID, a commit history, and a reference to the transform that produced it. Agents and humans operate on the same artifacts. The same object a human curates in the UI is the object an agent reads via MCP.
 
 When state is shared and structured, accountability follows from the architecture, not from prompts or policies. The system tracks what was done, by whom, and under what authority.
 
@@ -34,6 +34,9 @@ Scoped API keys define exactly what each agent or server can read, write, or inv
 
 **Provenance is infrastructure.**
 Like a filesystem journal or database transaction log, provenance in Agience is structural. Committed artifacts carry records of what produced them, from what inputs, under whose authority. It is not a premium feature, it is a consequence of how the system is built.
+
+**Extensible by design.**
+New capabilities plug in via MCP servers or content-type handlers. MCP servers extend what agents can do; content types extend how artifacts are rendered and interacted with. Neither requires changes to core.
 
 **Composable agent servers.**
 The platform ships with purpose-built MCP servers covering ingestion, retrieval, reasoning, output, networking, security, governance, and finance. Each is a standalone FastMCP service. Deploy the ones you need.

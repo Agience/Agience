@@ -1,6 +1,6 @@
 # Agience Roadmap
 
-This document tracks what's built, what's in progress, and what's coming next. No timelines — just capability status.
+This document tracks what's built, what's in progress, and what's coming next.
 
 ---
 
@@ -142,14 +142,16 @@ These tools are scaffolded (return `"TODO: ..."`); they need real implementation
 
 ### Platform
 
-- [ ] **Content-type handler isolation** — remote viewers as web components / module federation; content-type apps loaded without bundling into core.
-- [ ] **Desktop relay host** — signed installer (GitHub Releases); connects local tools to hosted or self-hosted Agience.
-- [ ] **Browser extension relay** — Chrome / Firefox; same capability as desktop relay.
-- [ ] **Contribution tracking** — per-artifact source attribution; who contributed what and when.
-- [ ] **Knowledge history browser** — browse an artifact's full version lineage and diff between versions.
+- [ ] **Content-type handler isolation** — remote viewers as web components; content-type apps loaded without bundling into core.
+- [ ] **Desktop relay host** — signed installer; connects local tools to hosted or self-hosted Agience.
+- [ ] **Browser extension relay** — Chrome / Firefox extension; same local-tool relay capability as the desktop host.
+- [ ] **Contribution tracking** — per-artifact attribution; who contributed what and when.
+- [ ] **Knowledge history browser** — full version lineage for every artifact; diff between any two versions.
 - [ ] **Person artifact and identity** — public profile artifact per user; identity references across the graph.
 - [ ] **Light-cone graph authorization** — collection-graph-aware access control propagation.
 - [ ] **Validation and certification** — explicit validation mode; certification receipts for approved knowledge units.
-- [ ] **Temporal knowledge state** — reconstruct workspace/collection state at any past point in time.
-- [ ] **Matrix integration** — second comms-plane adapter for Nexus (after Telegram is stable).
+- [ ] **Temporal knowledge state** — reconstruct workspace or collection state at any past point in time.
+- [ ] **Matrix integration** — second comms-plane adapter for Nexus after Telegram is stable.
+- [ ] **Cryptocurrency settlement** — on-chain value transfers via Ophan; wallet abstraction, signing, and human approval gating before execution.
+- [ ] **Blockchain provenance signing** — cryptographic signing of committed artifacts against an on-chain anchor; provenance chain verifiable without trusting the platform.
 
