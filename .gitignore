@@ -1,0 +1,129 @@
+# === PYTHON ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+# lib/  # Disabled - too broad, catches frontend/src/lib
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Envs
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Python packaging tools
+.pdm.toml
+.pdm-python
+.pdm-build/
+__pypackages__/
+.poetry.lock
+.uv/
+.pipenv/
+Pipfile.lock
+.pybuilder/
+target/
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Logs and coverage
+*.log
+logs/
+pip-log.txt
+pip-delete-this-directory.txt
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+.tox/
+.nox/
+.benchmarks/
+
+# Type checking and analysis
+.mypy_cache/
+.dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Framework-specific
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+instance/
+.webassets-cache
+.scrapy/
+docs/_build/
+
+# Editors / IDEs
+.idea/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# === NODE / VITE ===
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+dist-ssr/
+.vite/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# PyPI config
+.pypirc
+
+# === AGIENCE ===
+.data/
+.data.*/
+/.local/
+.env*
+!.env.*example
+
+# Ignore all key files
+keys/
+*.pem
+*.key
+*.der
+
+# Serena
+.serena/
+
+# Claude
+.claude/worktrees/
+.claude/*.local.*
