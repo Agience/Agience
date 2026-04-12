@@ -754,13 +754,7 @@ def add_artifact_to_collection(
     `artifacts/{root_id}`. If *order_key* is not given, places the new
     edge at the end (after the current max key).
 
-    Legacy call sites pass a version-id UUID as the 4th positional arg.
-    Those look like UUID strings (contain a dash); we detect and ignore
-    them, computing a fresh order_key instead.
     """
-    if order_key is not None and ("-" in order_key or len(order_key) > 16):
-        # Looks like a UUID from a legacy call site.
-        order_key = None
     if order_key is None:
         order_key = after_key(get_last_order_key(db, collection_id))
 

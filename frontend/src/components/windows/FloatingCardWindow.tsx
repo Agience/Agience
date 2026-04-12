@@ -44,25 +44,6 @@ function ContextPanel({ artifact }: { artifact: Artifact }) {
 	const [editTags, setEditTags] = useState<string[]>(ctx.tags || []);
 	const [newTag, setNewTag] = useState('');
 
-	// Sync when artifact changes externally
-	useEffect(() => {
-		const c = safeParseArtifactContext(artifact.context);
-		const syncedTitle = c.title || c.filename || '';
-		const syncedDescription = c.description || '';
-		const syncedTags = c.tags || [];
-		setEditTitle(syncedTitle);
-		setEditDescription(syncedDescription);
-		setEditTags(syncedTags);
-		// Mark the synced payload as already-saved so the debounced save
-		// doesn't fire a redundant PATCH after an external context update
-		// (e.g. header title save completing and pushing a WebSocket event).
-		resetTracking(JSON.stringify({
-			title: syncedTitle,
-			description: syncedDescription,
-			tags: syncedTags,
-		}));
-	}, [artifact.context, resetTracking]);
-
 	// Build the save payload from current local state
 	const contextPayload = useMemo(() => {
 		return JSON.stringify({
@@ -88,6 +69,25 @@ function ContextPanel({ artifact }: { artifact: Artifact }) {
 		},
 		enabled: !isReadOnly,
 	});
+
+	// Sync when artifact changes externally
+	useEffect(() => {
+		const c = safeParseArtifactContext(artifact.context);
+		const syncedTitle = c.title || c.filename || '';
+		const syncedDescription = c.description || '';
+		const syncedTags = c.tags || [];
+		setEditTitle(syncedTitle);
+		setEditDescription(syncedDescription);
+		setEditTags(syncedTags);
+		// Mark the synced payload as already-saved so the debounced save
+		// doesn't fire a redundant PATCH after an external context update
+		// (e.g. header title save completing and pushing a WebSocket event).
+		resetTracking(JSON.stringify({
+			title: syncedTitle,
+			description: syncedDescription,
+			tags: syncedTags,
+		}));
+	}, [artifact.context, resetTracking]);
 
 	const handleAddTag = () => {
 		const tag = newTag.trim();

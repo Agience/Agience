@@ -59,14 +59,6 @@ class TestLoadAll:
         assert "platform.log_level" in svc._cache
         assert len(svc._cache) == 1
 
-    def test_load_all_accepts_legacy_key_field(self, svc):
-        # Older rows use `key` instead of `id`.
-        rows = [{"key": "branding.title", "value": "X", "is_secret": False}]
-        with patch(
-            "db.arango_identity.get_all_platform_settings", return_value=rows
-        ):
-            svc.load_all(MagicMock())
-        assert svc._cache.get("branding.title") == "X"
 
 
 # ---------------------------------------------------------------------------
@@ -253,9 +245,10 @@ class TestEncryption:
         assert ct != "plaintext"
         assert svc._decrypt(ct) == "plaintext"
 
-    def test_decrypt_plaintext_returns_as_is(self, svc):
-        # Pre-encryption legacy values are returned unchanged when decrypt fails.
-        assert svc._decrypt("not-a-fernet-token") == "not-a-fernet-token"
+    def test_decrypt_invalid_token_raises(self, svc):
+        import pytest
+        with pytest.raises(Exception):
+            svc._decrypt("not-a-fernet-token")
 
 
 # ---------------------------------------------------------------------------

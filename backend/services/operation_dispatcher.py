@@ -10,13 +10,8 @@ Routers call `dispatch(op_name, artifact, body, ctx)` which:
 5. Emits `phase=after` events on success, or `phase=error` on failure.
 6. Returns the handler's result (or re-raises).
 
-This replaces scattered `publish_sync(...)` calls in services and hand-written
-context-parsing in routers (e.g. the legacy `/invoke` endpoint).
-
-The dispatcher supports a **fallback mode**: if the type has not declared
-`operations.{op_name}`, `dispatch()` raises `OperationNotDeclared` and the
-router may fall back to legacy behavior. This lets the refactor roll out
-type-by-type without breaking existing artifacts.
+If the type has not declared `operations.{op_name}`, `dispatch()` raises
+`OperationNotDeclared` and the router converts it to a 404.
 """
 
 from __future__ import annotations
@@ -39,7 +34,7 @@ logger = logging.getLogger(__name__)
 class OperationNotDeclared(Exception):
     """Raised when a type does not declare the requested operation.
 
-    Routers catching this may fall back to legacy behavior.
+    Routers catching this convert it to a 404 response.
     """
 
 
@@ -220,8 +215,8 @@ async def dispatch(
     """Run an operation through the emit envelope.
 
     Raises `OperationNotDeclared` if the type has not declared the operation
-    (callers may fall back to legacy behavior). Raises `HTTPException` for
-    authorization or enablement failures.
+    (callers convert to 404). Raises `HTTPException` for authorization or
+    enablement failures.
     """
     content_type = content_type_override or _extract_content_type(artifact)
     if not content_type:

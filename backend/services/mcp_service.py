@@ -152,32 +152,20 @@ def _get_builtin_http_server_config(server_id: str) -> Optional[MCPServerConfig]
 
 
 # ---------------------------------------------------------------------------
-# Phase 7C — Builtin server slug ↔ UUID resolution
+# Builtin server slug → UUID resolution
 #
 # First-party MCP servers are seeded as `vnd.agience.mcp-server+json`
 # artifacts at platform bootstrap (see `services/servers_content_service.py`).
 # Each artifact gets a stable UUID registered under the slug
 # `agience-server-{name}` in `platform_topology`.
-#
-# Callers in transition can ask for a server by either:
-#   - The persona slug (e.g. `"aria"`) — legacy form, still works because
-#     `_get_builtin_http_server_config` accepts it.
-#   - The seeded artifact UUID — preferred going forward, lets the dispatcher,
-#     event bus, and grant system treat MCP servers as first-class artifacts.
-#
-# These helpers bridge the two forms so call-site migration can happen
-# incrementally without rewriting `invoke_tool`'s dispatch chain in one shot.
 # ---------------------------------------------------------------------------
 
 
 def resolve_builtin_server_id(slug: str) -> str:
     """Return the seeded artifact UUID for a built-in persona slug.
 
-    Used by call sites that historically passed the bare slug (`"aria"`,
-    `"verso"`, etc.). Falling back to the slug itself when the topology
-    registry hasn't been populated (e.g. early bootstrap or unit tests)
-    keeps the old code path alive without requiring everything to know
-    about the registry.
+    Raises ValueError if the topology registry has not been populated or the
+    slug is not registered — callers must ensure bootstrap has completed.
     """
     if not slug:
         return slug
@@ -185,7 +173,12 @@ def resolve_builtin_server_id(slug: str) -> str:
     from services.platform_topology import get_id_optional
 
     artifact_uuid = get_id_optional(f"{SERVER_ARTIFACT_SLUG_PREFIX}{slug}")
-    return artifact_uuid or slug
+    if not artifact_uuid:
+        raise ValueError(
+            f"Builtin server '{slug}' is not registered in platform topology. "
+            "Ensure platform bootstrap has completed before calling this function."
+        )
+    return artifact_uuid
 
 
 def _lookup_builtin_slug_for_artifact_id(artifact_id: str) -> Optional[str]:

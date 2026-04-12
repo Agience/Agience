@@ -5,14 +5,7 @@ Date: 2026-04-01
 
 ## Smoke test
 
-Set your token (JWT or API key) then run:
-
-```powershell
-$env:AGIENCE_MCP_TOKEN = "<your token>"
-powershell -NoProfile -ExecutionPolicy Bypass -File .scripts/mcp_smoke_test.ps1
-```
-
-This verifies discovery, tool listing, and a basic tool call against the local backend.
+> **Note**: The smoke test script (`.scripts/mcp_smoke_test.ps1`) is not yet implemented. Use the manual testing flow below to verify MCP connectivity.
 
 ---
 

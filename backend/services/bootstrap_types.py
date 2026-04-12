@@ -106,9 +106,9 @@ USER_READABLE_SEED_SLUGS = [
 ]
 
 # Collections whose committed artifacts are materialized into the user's inbox workspace.
-# Only collection descriptor cards (Start Here, Platform Artifacts) are materialized for
-# navigation.  The individual Start Here docs live inside the Start Here collection and
-# are NOT flattened into the inbox — users navigate into Start Here to read them.
+# Inbox Seeds currently contains curated collection artifacts (for example Start Here and
+# Platform Artifacts). Their member artifacts remain in their own collections and are not
+# flattened into every inbox workspace.
 INBOX_MATERIALIZATION_SLUGS = [INBOX_SEEDS_COLLECTION_SLUG]
 
 # All platform-owned collections (used for admin grants and ID pre-resolution)

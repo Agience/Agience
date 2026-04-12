@@ -528,24 +528,12 @@ def _ensure_draft(
     now = _now_iso()
     new_id = str(uuid.uuid4())
 
-    # If committed has inline content (legacy), migrate it to S3 under the new draft id.
-    draft_content = committed.content
-    draft_context = committed.context
-    if committed.content:
-        content_key, draft_content = _store_content_in_s3(new_id, committed.content, committed.context)
-        try:
-            ctx_obj = json.loads(draft_context) if draft_context else {}
-        except (json.JSONDecodeError, TypeError):
-            ctx_obj = {}
-        ctx_obj["content_key"] = content_key
-        draft_context = json.dumps(ctx_obj)
-
     draft = ArtifactEntity(
         id=new_id,
         root_id=committed.root_id,
         collection_id=committed.collection_id,
-        context=draft_context,
-        content=draft_content,
+        context=committed.context,
+        content=committed.content,
         state=ArtifactEntity.STATE_DRAFT,
         created_by=user_id,
         modified_by=user_id,
@@ -690,25 +678,32 @@ def remove_artifact_from_workspace(
     """
     get_workspace(db, user_id, workspace_id)
 
+    # Resolve the root_id: the caller may pass a version id or a root_id.
+    root_id = artifact_id
     artifact = arango.get_artifact(db, artifact_id)
-    if not artifact or artifact.collection_id != workspace_id:
-        artifact = arango.get_current_in_collection(db, workspace_id, artifact_id)
+    if artifact:
+        root_id = artifact.root_id or artifact.id
 
-    if not artifact:
+    # The edge is the canonical link. If there's no edge, the artifact
+    # is not in this workspace.
+    edge = arango.get_edge(db, workspace_id, root_id)
+    if not edge:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Artifact not found")
 
-    arango.remove_artifact_from_collection(db, workspace_id, artifact.root_id)
+    arango.remove_artifact_from_collection(db, workspace_id, root_id)
 
-    if artifact.state == ArtifactEntity.STATE_DRAFT and artifact.collection_id == workspace_id:
-        arango.delete_artifact(db, artifact.id)
+    # If a draft version is owned by this workspace, clean it up.
+    local = arango.get_current_in_collection(db, workspace_id, root_id)
+    if local and local.state == ArtifactEntity.STATE_DRAFT and local.collection_id == workspace_id:
+        arango.delete_artifact(db, local.id)
         try:
             from search.ingest.pipeline_unified import delete_artifact_from_index
-            delete_artifact_from_index(artifact.id, artifact.root_id)
+            delete_artifact_from_index(local.id, local.root_id)
         except Exception:
             logger.debug("search delete failed", exc_info=True)
 
-    _emit_event(workspace_id, "artifact.deleted", {"artifact_id": artifact.id})
-    return artifact
+    _emit_event(workspace_id, "artifact.deleted", {"artifact_id": artifact_id})
+    return artifact or arango.get_artifact(db, root_id) or ArtifactEntity(id=root_id, root_id=root_id)
 
 
 def revert_artifact(

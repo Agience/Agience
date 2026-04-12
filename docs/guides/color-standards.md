@@ -18,15 +18,15 @@ All colors in the application should use standard CSS color names (purple, blue,
 - **Shades**: `blue-600` (default), `blue-700` (hover)
 - **Examples**: Commit button, save actions, secondary CTAs
 
-### Success/New State - Green
-- **Use for**: Success messages, new artifact states, positive indicators
+### Success/Draft State - Green
+- **Use for**: Success messages, draft artifact states, positive indicators
 - **Shades**: `green-600` (default), `green-50` (backgrounds)
-- **Examples**: "New" artifact badges, success toasts
+- **Examples**: "Draft" artifact badges, success toasts
 
-### Warning/Modified State - Amber
-- **Use for**: Warning messages, modified artifact states, caution indicators
+### Warning State - Amber
+- **Use for**: Warning messages, caution indicators
 - **Shades**: `amber-600` (default), `amber-50` (backgrounds)
-- **Examples**: "Modified" artifact badges, warning toasts
+- **Examples**: Warning toasts
 
 ### Danger/Archived State - Red
 - **Use for**: Error messages, delete actions, archived artifact states
@@ -57,17 +57,14 @@ className="p-2 text-gray-600 hover:bg-gray-100 rounded"
 
 ### Artifact States
 ```tsx
-// New card
+// Draft card
 className="border-2 border-green-300 bg-green-50"
 
-// Modified card
-className="border-2 border-amber-300 bg-amber-50"
+// Committed card
+className="border border-gray-300"
 
 // Archived card  
 className="border-2 border-red-300 bg-red-50 opacity-60"
-
-// Unmodified card
-className="border border-gray-300"
 ```
 
 ### Active States
@@ -94,8 +91,8 @@ className={isActive ? 'text-purple-600' : 'text-gray-600'}
 - Icons: `gray-600`
 
 ### Artifacts
-- New: `green-50` bg, `green-300` border
-- Modified: `amber-50` bg, `amber-300` border
+- Draft: `green-50` bg, `green-300` border
+- Committed: default border (`gray-300`)
 - Archived: `red-50` bg, `red-300` border
 - Selected: `purple-100` bg, `purple-300` border
 

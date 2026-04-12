@@ -175,34 +175,31 @@ class ArtifactSearchResponse(BaseModel):
 _COLL_ARTIFACTS = "artifacts"
 
 def _is_collection(db: StandardDatabase, container_id: str) -> bool:
-    """Return True if container_id refers to any container artifact (has content_type)."""
+    """Return True if container_id refers to a container artifact (workspace or collection)."""
     try:
         coll = db.collection(_COLL_ARTIFACTS)
         doc = coll.get(container_id)
-        return bool(doc and doc.get("content_type") is not None)
+        return bool(doc and doc.get("content_type") in (WORKSPACE_CONTENT_TYPE, COLLECTION_CONTENT_TYPE))
     except Exception:
         return False
 
 
-def _find_artifact(db: StandardDatabase, artifact_id: str) -> tuple[Optional[dict], str]:
+def _find_artifact(db: StandardDatabase, artifact_id: str) -> Optional[dict]:
     """Locate an artifact in the unified store.
 
-    Returns ``(doc, source)`` where *source* is always ``"artifacts"`` for
-    found rows (the tuple shape is retained for legacy call sites that still
-    branch on it). Archived artifacts return ``(None, "")``.
+    First tries exact _key lookup; if not found, resolves by root_id (operation
+    routes commonly receive root_id values for built-in server artifacts).
+    Archived artifacts return None.
     """
     try:
         coll = db.collection(_COLL_ARTIFACTS)
         doc = coll.get(artifact_id)
         if doc and doc.get("state") != "archived":
-            return doc, "artifacts"
+            return doc
     except Exception:
         pass
 
     # Resolve stable root IDs to the newest non-archived version row.
-    # Operation routes commonly receive root_id values (for example built-in
-    # server artifacts resolved from platform topology), while persisted rows
-    # may have distinct version _key values.
     try:
         cursor = db.aql.execute(
             """
@@ -217,19 +214,18 @@ def _find_artifact(db: StandardDatabase, artifact_id: str) -> tuple[Optional[dic
         )
         doc = next(iter(cursor), None)
         if doc:
-            return doc, "artifacts"
+            return doc
     except Exception:
         pass
 
-    return None, ""
+    return None
 
 
 def _normalize_artifact_doc(doc: Dict[str, Any]) -> Dict[str, Any]:
     """Ensure artifact-like response shape for both regular and container docs.
 
-    Workspaces and collections are container artifacts. Some legacy rows may not
-    include ``context``/``content`` fields, but frontend card rendering expects
-    a canonical artifact payload.
+    Workspaces and collections are container artifacts. Defaults ``context``/``content``
+    when absent so frontend card rendering always receives a canonical artifact payload.
     """
     normalized = dict(doc)
 
@@ -468,7 +464,7 @@ async def read_artifact(
     """Read a single artifact by ID."""
     check_access(auth, artifact_id, "read", arango_db)
 
-    doc, source = _find_artifact(arango_db, artifact_id)
+    doc = _find_artifact(arango_db, artifact_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Not found")
 
@@ -510,7 +506,7 @@ async def update_artifact(
         result["_container_type"] = "workspace" if updated.content_type == WORKSPACE_CONTENT_TYPE else "collection"
         return result
 
-    doc, source = _find_artifact(arango_db, artifact_id)
+    doc = _find_artifact(arango_db, artifact_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Not found")
 
@@ -545,7 +541,7 @@ async def delete_artifact(
 
     check_access(auth, artifact_id, "delete", arango_db)
 
-    doc, source = _find_artifact(arango_db, artifact_id)
+    doc = _find_artifact(arango_db, artifact_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Not found")
 
@@ -610,7 +606,7 @@ async def invoke_artifact(
 
     invoke_grant = check_access(auth, artifact_id, "invoke", arango_db)
 
-    doc, _source = _find_artifact(arango_db, artifact_id)
+    doc = _find_artifact(arango_db, artifact_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Not found")
 
@@ -691,7 +687,7 @@ async def run_artifact_operation(
     # Resolve builtin server slug (e.g. "nexus") to its registered artifact UUID.
     artifact_id = _resolve_builtin_server_artifact_id(arango_db, artifact_id)
 
-    doc, _source = _find_artifact(arango_db, artifact_id)
+    doc = _find_artifact(arango_db, artifact_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Not found")
 
@@ -948,7 +944,7 @@ async def batch_fetch_artifacts(
 
     results = []
     for aid in body.artifact_ids:
-        doc, source = _find_artifact(arango_db, aid)
+        doc = _find_artifact(arango_db, aid)
         if not doc:
             continue
 
@@ -963,7 +959,6 @@ async def batch_fetch_artifacts(
         normalized.pop("_rev", None)
         if "_key" in normalized:
             normalized.setdefault("id", normalized.pop("_key"))
-        normalized["_source"] = source
         results.append(normalized)
 
     return {"artifacts": results}
@@ -1032,10 +1027,7 @@ async def upload_status(
 
     check_access(auth, artifact_id, "update", arango_db)
 
-    # Resolve the container the artifact belongs to. Unified store: artifacts
-    # carry collection_id (the container can be a workspace-typed collection or
-    # any other collection); the legacy workspace_id field no longer exists.
-    doc, _source = _find_artifact(arango_db, artifact_id)
+    doc = _find_artifact(arango_db, artifact_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Not found")
 
@@ -1081,7 +1073,7 @@ async def multipart_part_url(
 
     check_access(auth, artifact_id, "update", arango_db)
 
-    doc, _source = _find_artifact(arango_db, artifact_id)
+    doc = _find_artifact(arango_db, artifact_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Not found")
 
@@ -1123,7 +1115,7 @@ async def content_url(
     """Get a signed content URL for an artifact's stored content."""
     check_access(auth, artifact_id, "read", arango_db)
 
-    doc, source = _find_artifact(arango_db, artifact_id)
+    doc = _find_artifact(arango_db, artifact_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Not found")
 
@@ -1252,7 +1244,7 @@ async def revert_artifact(
 
     check_access(auth, artifact_id, "update", arango_db)
 
-    doc, _source = _find_artifact(arango_db, artifact_id)
+    doc = _find_artifact(arango_db, artifact_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Not found")
 
@@ -1339,7 +1331,7 @@ async def move_artifact(
 
     check_access(auth, artifact_id, "update", arango_db)
 
-    doc, _source = _find_artifact(arango_db, artifact_id)
+    doc = _find_artifact(arango_db, artifact_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Not found")
 

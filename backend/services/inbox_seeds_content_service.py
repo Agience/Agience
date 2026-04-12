@@ -10,7 +10,7 @@ Collections created/populated:
   agience-seeds-agents             Agent persona artifacts (linked from Resources collection).
 
 The Agience Inbox Seeds parent collection (agience-inbox-seeds) is admin-only.
-It receives collection-descriptor artifacts so admins can see the nested structure.
+It links member collections so admins can see the nested structure.
 Standard users are granted READ access to the sub-collections (see
 bootstrap_types.USER_READABLE_SEED_SLUGS).
 
@@ -35,6 +35,7 @@ from db.arango import (
     get_artifact as db_get_artifact,
     get_current_in_collection as db_get_artifact_by_collection_and_root,
     get_collection_by_id as db_get_collection_by_id,
+    get_edge as db_get_edge,
 )
 from services.collection_service import (
     db_get_latest_artifact_version_by_root_id,
@@ -61,7 +62,6 @@ logger = logging.getLogger(__name__)
 # Stable namespace for seed-content artifact root_ids (UUID5-based, no DB lookup needed)
 # ---------------------------------------------------------------------------
 _SEED_NS = uuid.UUID("c0bfeed4-0007-4000-a91e-ce5501234000")
-COLLECTION_DESCRIPTOR_MIME = "application/vnd.agience.collection+json"
 
 
 def _seed_root_id(slug: str) -> str:
@@ -123,7 +123,7 @@ def ensure_all_seed_sub_collections(arango_db: StandardDatabase) -> None:
     if platform_artifacts_id:
         _populate_platform_artifacts(arango_db, platform_artifacts_id, all_servers_id, all_tools_id, agents_id)
 
-    # Add collection-descriptor artifacts inside Inbox Seeds so admins see the structure.
+    # Link Start Here and Platform Artifacts directly into Inbox Seeds.
     _link_sub_collections_to_inbox_seeds(
         arango_db,
         start_here_id=start_here_id,
@@ -225,31 +225,25 @@ def _ensure_artifact_in_collection(
         return False
 
 
-def _ensure_collection_descriptor(
+def _link_collection_as_member(
     arango_db: StandardDatabase,
     *,
     parent_collection_id: str,
     child_collection_id: str,
-    child_name: str,
-    descriptor_slug: str,
 ) -> bool:
     """
-    Add a collection-descriptor artifact to parent_collection so users
-    can navigate from it into child_collection.
+    Link a child collection artifact directly into a parent collection via an edge.
+    Both IDs are artifact IDs — a collection IS an artifact. Idempotent.
     """
-    root_id = f"collection:{child_collection_id}"
-    return _ensure_artifact_in_collection(
-        arango_db,
-        collection_id=parent_collection_id,
-        root_id=root_id,
-        slug=descriptor_slug,
-        context={
-            "content_type": COLLECTION_DESCRIPTOR_MIME,
-            "title": child_name,
-            "collection_id": child_collection_id,
-        },
-        content=f"Collection: {child_name}",
-    )
+    if db_get_edge(arango_db, parent_collection_id, child_collection_id):
+        return True  # already linked
+    try:
+        db_add_artifact_to_collection(arango_db, parent_collection_id, child_collection_id)
+        logger.info("Linked collection %s into parent collection %s", child_collection_id, parent_collection_id)
+        return True
+    except Exception:
+        logger.exception("Failed linking collection %s into parent %s", child_collection_id, parent_collection_id)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -705,30 +699,24 @@ def _populate_platform_artifacts(
     all_tools_id: Optional[str],
     agents_id: Optional[str],
 ) -> None:
-    # Link collection descriptors for Agience Servers, Agience Tools, and Agience Agents
+    # Link Agience Servers, Agience Tools, and Agience Agents directly as members.
     if all_servers_id:
-        _ensure_collection_descriptor(
+        _link_collection_as_member(
             arango_db,
             parent_collection_id=collection_id,
             child_collection_id=all_servers_id,
-            child_name="Agience Servers",
-            descriptor_slug="agience-descriptor-all-servers",
         )
     if all_tools_id:
-        _ensure_collection_descriptor(
+        _link_collection_as_member(
             arango_db,
             parent_collection_id=collection_id,
             child_collection_id=all_tools_id,
-            child_name="Agience Tools",
-            descriptor_slug="agience-descriptor-all-tools",
         )
     if agents_id:
-        _ensure_collection_descriptor(
+        _link_collection_as_member(
             arango_db,
             parent_collection_id=collection_id,
             child_collection_id=agents_id,
-            child_name="Agience Agents",
-            descriptor_slug="agience-descriptor-agents",
         )
 
     # Link Authority artifact
@@ -763,7 +751,7 @@ def _populate_platform_artifacts(
 
 
 # ---------------------------------------------------------------------------
-# Inbox Seeds parent -- collection descriptor links (admin visibility)
+# Inbox Seeds parent -- member collection links (admin visibility)
 # ---------------------------------------------------------------------------
 
 def _link_sub_collections_to_inbox_seeds(
@@ -773,8 +761,8 @@ def _link_sub_collections_to_inbox_seeds(
     platform_artifacts_id: Optional[str],
 ) -> None:
     """
-    Add collection-descriptor artifacts inside the Inbox Seeds collection so that
-    admins can see and navigate the nested structure.
+    Link Start Here and Platform Artifacts directly into Inbox Seeds as member collections.
+    A collection IS an artifact; no proxy artifact is needed.
     """
     try:
         inbox_seeds_id = get_id(INBOX_SEEDS_COLLECTION_SLUG)
@@ -783,18 +771,14 @@ def _link_sub_collections_to_inbox_seeds(
         return
 
     if start_here_id:
-        _ensure_collection_descriptor(
+        _link_collection_as_member(
             arango_db,
             parent_collection_id=inbox_seeds_id,
             child_collection_id=start_here_id,
-            child_name="Start Here",
-            descriptor_slug="agience-descriptor-start-here",
         )
     if platform_artifacts_id:
-        _ensure_collection_descriptor(
+        _link_collection_as_member(
             arango_db,
             parent_collection_id=inbox_seeds_id,
             child_collection_id=platform_artifacts_id,
-            child_name="Platform Artifacts",
-            descriptor_slug="agience-descriptor-platform-artifacts",
         )

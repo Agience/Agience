@@ -7,7 +7,7 @@ import {
   addArtifactToWorkspace,
   importCollectionArtifactToWorkspace,
   updateWorkspaceArtifact,
-  deleteWorkspaceArtifact,
+  removeWorkspaceArtifact,
   revertWorkspaceArtifact,
   commitWorkspace,
   previewWorkspaceCommit,
@@ -209,7 +209,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         order_key = afterKey(lastArtifact?.order_key || null);
       }
 
-      const payload: Record<string, unknown> = {
+      const payload: {
+        content: string;
+        context: string;
+        order_key: string;
+        content_type?: string;
+      } = {
         content: partial.content ?? '',
         context: stringifyArtifactContext(partial.context ?? { content_type: 'text/plain', preview_text: '' }),
         order_key, // Client-computed fractional index
@@ -284,11 +289,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     async (id: string) => {
       if (!activeWorkspace?.id) return;
       try {
-        await deleteWorkspaceArtifact(activeWorkspace.id, String(id));
-        setArtifacts(prev => prev.filter(c => String(c.id) !== String(id)));
+        await removeWorkspaceArtifact(activeWorkspace.id, String(id));
+        setArtifacts(prev => prev.filter(c => String(c.id) !== String(id) && String(c.root_id) !== String(id)));
         setSelectedArtifactIds(prev => prev.filter(cid => cid !== String(id)));
       } catch (err) {
-        console.error('Failed to delete artifact', err);
+        console.error('Failed to remove artifact', err);
       }
     },
     [activeWorkspace?.id]

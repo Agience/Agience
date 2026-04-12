@@ -10,12 +10,20 @@ export const CARD_CONFIRM = {
   DELETE_PERMANENT_TITLE: `Delete ${PRODUCT_NOUN.singular.toLowerCase()} permanently?`,
   DELETE_PERMANENT_DESCRIPTION: `This ${PRODUCT_NOUN.singular.toLowerCase()} has never been published. Deleting it will permanently remove all content.`,
   DELETE_PERMANENT_CONFIRM: 'Delete permanently',
+  REVERT_TITLE: `Revert changes to this ${PRODUCT_NOUN.singular.toLowerCase()}?`,
+  REVERT_DESCRIPTION: 'This will discard local edits and restore the last committed version.',
+  REVERT_CONFIRM: 'Revert changes',
+  ARCHIVE_TITLE: `Archive this ${PRODUCT_NOUN.singular.toLowerCase()}?`,
+  ARCHIVE_DESCRIPTION: `This will hide the ${PRODUCT_NOUN.singular.toLowerCase()} from active views until restored.`,
+  ARCHIVE_CONFIRM: 'Archive',
 } as const;
 
 // Bulk operations confirmations
 export const BULK_CONFIRM = {
   DELETE_TITLE: (count: number) => `Delete ${count} ${noun(count).toLowerCase()}?`,
   DELETE_DESCRIPTION: (count: number) => `${count === 1 ? `This ${PRODUCT_NOUN.singular.toLowerCase()}` : `These ${PRODUCT_NOUN.plural.toLowerCase()}`} ${count === 1 ? 'has' : 'have'} never been published and will be permanently deleted.`,
+  ARCHIVE_TITLE: (count: number) => `Archive ${count} ${noun(count).toLowerCase()}?`,
+  ARCHIVE_DESCRIPTION: (count: number) => `${count === 1 ? `This ${PRODUCT_NOUN.singular.toLowerCase()}` : `These ${PRODUCT_NOUN.plural.toLowerCase()}`} ${count === 1 ? 'will' : 'will'} be moved to archived state and can be restored later.`,
 } as const;
 
 // API key/share deletion confirmations

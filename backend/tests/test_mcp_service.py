@@ -94,9 +94,10 @@ class TestSlugResolution:
         with patch("services.platform_topology.get_id_optional", return_value="uuid-1"):
             assert mcp_service.resolve_builtin_server_id("nexus") == "uuid-1"
 
-    def test_resolve_builtin_server_id_falls_back_to_slug(self):
+    def test_resolve_builtin_server_id_raises_when_not_registered(self):
         with patch("services.platform_topology.get_id_optional", return_value=None):
-            assert mcp_service.resolve_builtin_server_id("nexus") == "nexus"
+            with pytest.raises(ValueError, match="nexus"):
+                mcp_service.resolve_builtin_server_id("nexus")
 
     def test_resolve_builtin_server_id_empty_input(self):
         assert mcp_service.resolve_builtin_server_id("") == ""

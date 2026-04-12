@@ -160,7 +160,7 @@ def _ensure_all_servers_collection(arango_db: StandardDatabase) -> Optional[str]
             modified_time=now,
         )
         db_create_collection(arango_db, collection)
-        # NOTE: No self-descriptor — cross-reference descriptors are created
+        # NOTE: No self-referential membership is created here; cross-reference member links are created
         # by inbox_seeds_content_service._populate_platform_artifacts.
         logger.info("Created all-servers collection (id=%s)", col_id)
         return col_id

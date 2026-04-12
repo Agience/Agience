@@ -155,10 +155,10 @@ describe('api/collections', () => {
     expect(res.id).toBe('v2');
   });
 
-  it('removeArtifactFromCollection calls DELETE /artifacts/:rootId', async () => {
-    del.mockResolvedValueOnce(undefined);
+  it('removeArtifactFromCollection calls POST /artifacts/:rootId/remove', async () => {
+    post.mockResolvedValueOnce(undefined);
     await removeArtifactFromCollection('c1', 'r1');
-    expect(del).toHaveBeenCalledWith('/artifacts/r1');
+    expect(post).toHaveBeenCalledWith('/artifacts/r1/remove', { container_id: 'c1' });
   });
 
   it('listCollectionCommits calls GET /artifacts/:id/commits', async () => {

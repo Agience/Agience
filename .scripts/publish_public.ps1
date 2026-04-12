@@ -13,7 +13,7 @@
     build_info.json is also stamped in your local main working tree (not committed).
 
 .PARAMETER Version
-    Required. Semantic version (e.g., "0.2.0"). Stamps build_info.json and creates git tag v{Version}.
+    Optional for main/canary publishes. Required when using -ReleaseBranch. Stamps build_info.json and creates git tag v{Version}.
 
 .PARAMETER Message
     Commit/tag message. Defaults to "Agience v{Version}".
@@ -32,13 +32,13 @@
 #>
 
 param(
-    [Parameter(Mandatory=$true)]
     [Alias("v")]
     [string]$Version,
     [Alias("m")]
     [string]$Message,
     [Alias("b")]
     [string]$PublicBranch = "main",
+    [switch]$ReleaseBranch,
     [switch]$CreateOrphan,
     [switch]$DryRun
 )
@@ -52,10 +52,23 @@ $OriginalBranch = (git rev-parse --abbrev-ref HEAD).Trim()
 $Published = $false
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
+# --- Validate required params ---
+if ($ReleaseBranch -and -not $Version) {
+    Write-Host "ERROR: -Version is required when using -ReleaseBranch." -ForegroundColor Red
+    exit 1
+}
+
 # --- Validate version format ---
-if ($Version -notmatch '^\d+\.\d+\.\d+(-[\w.]+)?$') {
+if ($Version -and $Version -notmatch '^\d+\.\d+\.\d+(-[\w.]+)?$') {
     Write-Host "ERROR: Version must be semver (e.g., 0.2.0 or 0.2.0-rc.1)." -ForegroundColor Red
     exit 1
+}
+
+# --- Derive release branch from version when -ReleaseBranch is set ---
+if ($ReleaseBranch) {
+    $null = $Version -match '^(\d+)\.(\d+)\.'
+    $PublicBranch = "release/$($Matches[1]).$($Matches[2])"
+    Write-Host "  Release branch derived from version: $PublicBranch" -ForegroundColor Gray
 }
 
 # --- Validate state ---
@@ -78,10 +91,10 @@ if ($remotes -notcontains $PublicRemote) {
 
 # --- Build message ---
 if (-not $Message) {
-    $Message = "Agience v$Version"
+    $Message = if ($Version) { "Agience v$Version" } else { "publish" }
 }
 
-$TagName = "v$Version"
+$TagName = if ($Version) { "v$Version" } else { $null }
 $Mode = if ($CreateOrphan) { "ORPHAN (force-push)" } else { "STACKED (normal push)" }
 
 Write-Host ""
@@ -89,7 +102,7 @@ Write-Host "=== Publish to Public ===" -ForegroundColor Cyan
 Write-Host "  Source branch : $OriginalBranch"
 Write-Host "  Remote        : $PublicRemote ($PublicBranch)"
 Write-Host "  Commit message: $Message"
-Write-Host "  Tag           : $TagName"
+if ($TagName) { Write-Host "  Tag           : $TagName" }
 Write-Host "  Mode          : $Mode"
 if ($DryRun)  { Write-Host "  Dry run       : YES" -ForegroundColor Yellow }
 Write-Host ""
@@ -118,19 +131,36 @@ try {
             exit 1
         }
     } else {
-        # --- Stacked mode: new commit on top of public/main ---
+        # --- Stacked mode: new commit on top of target branch ---
         Write-Host "Fetching $PublicRemote/$PublicBranch..." -ForegroundColor Gray
         git fetch $PublicRemote $PublicBranch 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "ERROR: Failed to fetch $PublicRemote/$PublicBranch." -ForegroundColor Red
-            exit 1
-        }
+        $FetchExitCode = $LASTEXITCODE
 
-        # Create staging branch from the public remote's current HEAD
-        git checkout -b $StagingBranch "$PublicRemote/$PublicBranch" 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "ERROR: Failed to create staging branch from $PublicRemote/$PublicBranch." -ForegroundColor Red
-            exit 1
+        if ($FetchExitCode -ne 0) {
+            if ($PublicBranch -ne "main") {
+                # Release branch does not exist yet — base it on public/main
+                Write-Host "  Branch '$PublicBranch' not found on remote. Creating from $PublicRemote/main..." -ForegroundColor DarkYellow
+                git fetch $PublicRemote main 2>&1 | Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host "ERROR: Failed to fetch $PublicRemote/main." -ForegroundColor Red
+                    exit 1
+                }
+                git checkout -b $StagingBranch "$PublicRemote/main" 2>&1 | Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host "ERROR: Failed to create staging branch from $PublicRemote/main." -ForegroundColor Red
+                    exit 1
+                }
+            } else {
+                Write-Host "ERROR: Failed to fetch $PublicRemote/$PublicBranch." -ForegroundColor Red
+                exit 1
+            }
+        } else {
+            # Create staging branch from the public remote's current HEAD
+            git checkout -b $StagingBranch "$PublicRemote/$PublicBranch" 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "ERROR: Failed to create staging branch from $PublicRemote/$PublicBranch." -ForegroundColor Red
+                exit 1
+            }
         }
 
         # Replace entire working tree with current source branch content
@@ -150,11 +180,13 @@ try {
         }
     }
 
-    # --- Stamp build_info.json with version ---
-    Write-Host "  Stamping build_info.json with version $Version" -ForegroundColor Gray
-    $buildInfo = @{ version = $Version } | ConvertTo-Json
-    [System.IO.File]::WriteAllText("build_info.json", $buildInfo, $Utf8NoBom)
-    git add build_info.json 2>&1 | Out-Null
+    # --- Stamp build_info.json with version (release publishes only) ---
+    if ($Version) {
+        Write-Host "  Stamping build_info.json with version $Version" -ForegroundColor Gray
+        $buildInfo = @{ version = $Version } | ConvertTo-Json
+        [System.IO.File]::WriteAllText("build_info.json", $buildInfo, $Utf8NoBom)
+        git add build_info.json 2>&1 | Out-Null
+    }
 
     # --- Stage everything ---
     git add -A 2>&1 | Out-Null
@@ -184,7 +216,11 @@ try {
         } else {
             Write-Host "DRY RUN: Would push $commitHash to ${PublicRemote}/${PublicBranch}" -ForegroundColor Yellow
         }
-        Write-Host "DRY RUN: Would tag as $TagName and push tag" -ForegroundColor Yellow
+        if ($PublicBranch -ne "main") {
+            Write-Host "DRY RUN: Would tag as $TagName and push tag" -ForegroundColor Yellow
+        } else {
+            Write-Host "DRY RUN: No tag (canary/main publish)" -ForegroundColor Yellow
+        }
     } else {
         if ($CreateOrphan) {
             Write-Host "Force-pushing to ${PublicRemote}/${PublicBranch}..." -ForegroundColor Gray
@@ -202,6 +238,13 @@ try {
             Write-Host "ERROR: Push failed." -ForegroundColor Red
             exit 1
         }
+
+        # Tags are only pushed for release/* branches (stable releases).
+        # Pushing to main produces a canary — no tag, no GitHub Release.
+        if ($PublicBranch -eq "main") {
+            Write-Host "  Skipping tag (main/canary publish). CI will build :canary images from branch push." -ForegroundColor DarkYellow
+            $Published = $true
+        } else {
 
         Write-Host "Tagging as $TagName..." -ForegroundColor Gray
         git rev-parse -q --verify "refs/tags/$TagName" 2>&1 | Out-Null
@@ -228,9 +271,15 @@ try {
         }
         $Published = $true
 
+        } # end if ($PublicBranch -eq 'main')
+
         Write-Host ""
-        Write-Host "Published v$Version successfully." -ForegroundColor Green
-        Write-Host "  CI will build Docker images from tag $TagName." -ForegroundColor Gray
+        if ($Version) {
+            Write-Host "Published v$Version successfully." -ForegroundColor Green
+            Write-Host "  CI will build Docker images from tag $TagName." -ForegroundColor Gray
+        } else {
+            Write-Host "Published successfully." -ForegroundColor Green
+        }
     }
 
 } finally {
@@ -241,7 +290,7 @@ try {
     git branch -D $StagingBranch 2>&1 | Out-Null
 
     # Keep local main's build_info version in sync with the published release.
-    if ($Published -and $OriginalBranch -eq "main") {
+    if ($Published -and $OriginalBranch -eq "main" -and $Version) {
         $buildInfo = @{ version = $Version } | ConvertTo-Json
         [System.IO.File]::WriteAllText("build_info.json", $buildInfo, $Utf8NoBom)
         Write-Host "Updated local main build_info.json to v$Version (not committed)." -ForegroundColor Gray

@@ -603,7 +603,7 @@ export default function Browser({
     // When showing search results, skip workspace search filtering
     let result = isShowingSearchResults ? resolvedDisplayArtifacts : searchFilteredArtifacts;
 
-    // Strip the workspace self-descriptor card. In the unified model, the workspace
+    // Strip the workspace container artifact card. In the unified model, the workspace
     // container artifact uses the workspace ID as both id/root_id and should never
     // render as a normal card inside its own workspace view.
     if (activeSource?.type === 'workspace' && workspaceId) {
@@ -618,7 +618,7 @@ export default function Browser({
       result = result.filter((c: Artifact) => !hiddenContentTypeFilters.has(getArtifactContentTypeCategory(c)));
     }
 
-    // Apply state filter from FilterBar (backward compatibility)
+    // Apply state filter from FilterBar
     if (activeFilter !== 'all') {
       result = result.filter((c: Artifact) => c.state === activeFilter);
     }
@@ -926,14 +926,14 @@ export default function Browser({
     setIsArtifactTypePickerOpen(true);
   }, [activeSource?.type]);
 
-  // [+] creates a new workspace (the backend seeds its self-descriptor artifact for search),
+  // [+] creates a new workspace (the backend indexes its container artifact for search),
   // then switches to the new workspace. No card is dropped into the current workspace.
   const handleCreateWorkspace = useCallback(async () => {
     const ws = await createWorkspace('Untitled Workspace', '', { activate: false });
     setActiveWorkspaceId(ws.id);
   }, [createWorkspace, setActiveWorkspaceId]);
 
-  // Double-click tab to rename workspace. Also updates the workspace's self-descriptor
+  // Double-click tab to rename workspace. Also updates the workspace container artifact
   // artifact so the new name is reflected in search results.
   const handleRenameWorkspace = useCallback(async (id: string, name: string) => {
     await updateWorkspace({ id, name });
@@ -950,7 +950,7 @@ export default function Browser({
     workspaceCopies: Artifact[];
     /** IDs already present in the active workspace (skip / reorder only) */
     alreadyPresent: string[];
-    /** IDs we couldn't resolve — fall back to collection import for backward compat */
+    /** IDs not found in any known artifact pool — treated as collection root_ids */
     unresolved: string[];
   };
 
@@ -996,7 +996,7 @@ export default function Browser({
         continue;
       }
 
-      // Fallback
+      // No root_id and no collection_id — treat as unresolved
       result.unresolved.push(id);
     }
 
@@ -1058,7 +1058,7 @@ export default function Browser({
 
     const { collectionImports, workspaceCopies, unresolved } = resolveDroppedIds(draggedIds);
 
-    // 1. Collection imports + unresolved (backward compat) — use existing import flow
+    // 1. Collection imports — combine classified root_ids, unresolved IDs, and any root_ids from the drag payload
     const fallbackImportIds = Array.isArray(dragPayload?.rootIds) ? dragPayload.rootIds.filter(Boolean) : [];
     const importIds = [...collectionImports, ...unresolved, ...fallbackImportIds]
       .filter((value, index, array) => array.indexOf(value) === index);
@@ -1497,6 +1497,7 @@ export default function Browser({
 
     if (activeSource?.type === 'workspace' && workspaceId) {
       await removeWorkspaceArtifact(workspaceId, removableId);
+      setSourceArtifacts(prev => prev.filter(candidate => String(candidate.root_id ?? candidate.id) !== removableId));
       return;
     }
 

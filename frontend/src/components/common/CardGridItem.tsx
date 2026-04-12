@@ -1,6 +1,6 @@
 // src/components/common/CardGridItem.tsx
 // "Artifact Preview" – the small grid tile representation of a single artifact inside the Artifact Grid.
-import { MouseEvent, DragEvent, useState, useRef, useEffect, useMemo, JSX } from 'react';
+import { MouseEvent, DragEvent, useState, useRef, useEffect, useMemo } from 'react';
 import clsx from 'clsx';
 import {
   FiTrash2 as Trash,            // Delete (draft, last collection)

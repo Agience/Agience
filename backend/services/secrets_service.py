@@ -53,37 +53,30 @@ def _get_cipher() -> Optional[Fernet]:
         return _cipher
     key = get_encryption_key()
     if not key:
-        logger.warning(
-            "PLATFORM_ENCRYPTION_KEY not set -- secrets stored as plaintext (INSECURE). "
+        raise RuntimeError(
+            "PLATFORM_ENCRYPTION_KEY is not set. "
             "Generate with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
         )
-        return None
     try:
         _cipher = Fernet(key.encode() if isinstance(key, str) else key)
         return _cipher
     except Exception as exc:
-        logger.error("Failed to initialize Fernet cipher: %s", exc)
-        return None
+        raise RuntimeError(f"Failed to initialize Fernet cipher: {exc}") from exc
 
 
 def encrypt_value(plaintext: str) -> str:
     """Encrypt a secret value for storage."""
     cipher = _get_cipher()
-    if not cipher:
-        return plaintext  # insecure fallback -- dev only
     return cipher.encrypt(plaintext.encode()).decode()
 
 
 def decrypt_value(encrypted: str) -> str:
     """Decrypt a stored secret value."""
     cipher = _get_cipher()
-    if not cipher:
-        return encrypted  # insecure fallback
     try:
         return cipher.decrypt(encrypted.encode()).decode()
     except Exception as exc:
-        logger.error("Failed to decrypt secret: %s", exc)
-        return ""
+        raise RuntimeError(f"Failed to decrypt secret value: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +130,7 @@ class SecretConfig:
             type=data.get("type", "llm_key"),
             provider=data.get("provider", ""),
             label=data.get("label", ""),
-            encrypted_value=data.get("encrypted_value", data.get("encrypted_key", "")),
+            encrypted_value=data.get("encrypted_value", ""),
             created_time=data.get("created_time", ""),
             is_default=data.get("is_default", False),
             authorizer_id=data.get("authorizer_id", ""),

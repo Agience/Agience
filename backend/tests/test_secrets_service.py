@@ -45,15 +45,15 @@ class TestEncryptDecrypt:
         assert ct != "hunter2"
         assert secrets_service.decrypt_value(ct) == "hunter2"
 
-    def test_decrypt_garbage_returns_empty_string(self):
-        # Real Fernet token rejected → returns "" (logged, not raised).
-        assert secrets_service.decrypt_value("not-a-fernet-token") == ""
+    def test_decrypt_garbage_raises_runtime_error(self):
+        with pytest.raises(RuntimeError, match="Failed to decrypt"):
+            secrets_service.decrypt_value("not-a-fernet-token")
 
-    def test_unconfigured_key_falls_back_to_plaintext(self):
+    def test_unconfigured_key_raises_runtime_error(self):
         ss._cipher = None
         with patch("services.secrets_service.get_encryption_key", return_value=None):
-            ct = secrets_service.encrypt_value("plain")
-        assert ct == "plain"
+            with pytest.raises(RuntimeError, match="PLATFORM_ENCRYPTION_KEY"):
+                secrets_service.encrypt_value("plain")
 
 
 # ---------------------------------------------------------------------------
@@ -79,11 +79,6 @@ class TestSecretConfig:
         assert round.type == "llm_key"
         assert round.is_default is True
 
-    def test_from_dict_accepts_legacy_encrypted_key_field(self):
-        # Old storage shape used `encrypted_key` instead of `encrypted_value`.
-        d = {"id": "s-1", "type": "llm_key", "encrypted_key": "old"}
-        s = secrets_service.SecretConfig.from_dict(d)
-        assert s.encrypted_value == "old"
 
     def test_to_dict_omits_expires_at_when_blank(self):
         s = secrets_service.SecretConfig(

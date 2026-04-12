@@ -100,8 +100,8 @@ export function addArtifactToCollection(_collectionId: string, versionId: string
   return post(`/artifacts`, { container_id: _collectionId, source_artifact_id: versionId });
 }
 
-export function removeArtifactFromCollection(_collectionId: string, rootId: string): Promise<void> {
-  return del(`/artifacts/${rootId}`);
+export function removeArtifactFromCollection(collectionId: string, rootId: string): Promise<void> {
+  return post(`/artifacts/${rootId}/remove`, { container_id: collectionId });
 }
 
 // batch fetch multiple artifacts across ALL accessible collections (global search)

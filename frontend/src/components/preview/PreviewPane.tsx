@@ -7,7 +7,7 @@ import { CollectionPicker } from '../modals/CollectionPicker';
 import { BulkTagDialog, type BulkTagApplyRequest } from '../modals/BulkTagDialog';
 import { addArtifactToCollection } from '../../api/collections';
 import { useConfirm } from '../../context/dialog/useConfirm';
-import { BULK_CONFIRM, BUTTON_LABELS, CARD_CONFIRM } from '@/constants/strings';
+import { BULK_CONFIRM, BUTTON_LABELS } from '@/constants/strings';
 import { getContentType } from '@/registry/content-types';
 import ContainerCardViewer from '@/components/containers/ContainerCardViewer';
 import ViewCardViewer from '@/components/view/ViewCardViewer';
@@ -208,20 +208,10 @@ function MultiSelectSummary({ count, onClose }: { count: number; onClose?: () =>
   };
 
   const handleBulkArchive = async () => {
-    const confirmed = await dangerConfirm.confirm({
-      title: BULK_CONFIRM.ARCHIVE_TITLE(count),
-      description: BULK_CONFIRM.ARCHIVE_DESCRIPTION(count),
-      confirmLabel: CARD_CONFIRM.ARCHIVE_CONFIRM,
-      cancelLabel: BUTTON_LABELS.CANCEL,
-      tone: 'warn'
-    });
-    
-    if (confirmed) {
-      for (const artifactId of selectedArtifactIds) {
-        await updateArtifact({ id: artifactId, state: 'archived' });
-      }
-      unselectAllArtifacts();
+    for (const artifactId of selectedArtifactIds) {
+      await updateArtifact({ id: artifactId, state: 'archived' });
     }
+    unselectAllArtifacts();
   };
 
   return (

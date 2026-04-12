@@ -14,7 +14,7 @@ from services.bootstrap_types import (
 
 
 def test_inbox_materialization_slugs_includes_required_collections():
-    """INBOX_MATERIALIZATION_SLUGS should only include inbox-seeds (collection descriptors).
+    """INBOX_MATERIALIZATION_SLUGS should only include inbox-seeds (curated collection artifacts).
 
     Start Here individual docs should NOT be materialized directly into the inbox.
     Users navigate into the Start Here collection to see onboarding docs.
@@ -105,7 +105,7 @@ def test_apply_inbox_seeds_to_user_grants_seed_authority_and_host_access(
         ]
     )
     # Custom seed collections are granted but NOT materialized into the inbox.
-    # Only INBOX_MATERIALIZATION_SLUGS (inbox-seeds descriptors) trigger
+    # Only INBOX_MATERIALIZATION_SLUGS (inbox-seeds curated artifacts) trigger
     # artifact fetch, and those slugs aren't registered in this test.
     mock_get_artifacts.assert_not_called()
     mock_add_to_workspace.assert_not_called()

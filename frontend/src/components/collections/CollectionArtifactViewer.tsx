@@ -7,7 +7,6 @@ import { addArtifactToCollection, listCollectionArtifacts, removeArtifactFromCol
 import { getDroppedArtifactIds } from '@/dnd/agienceDrag';
 import { useWorkspace } from '@/hooks/useWorkspace';
 import type { Artifact } from '@/context/workspace/workspace.types';
-import { safeParseArtifactContext } from '@/utils/artifactContext';
 import { getStableArtifactId } from '@/utils/artifact-identifiers';
 
 type CollectionViewMode = 'grid' | 'list';
@@ -65,18 +64,10 @@ export default function CollectionArtifactViewer({
   onOpenArtifact?: (artifact: Artifact) => void;
 }) {
   const { artifacts: workspaceArtifacts } = useWorkspace();
-  const context = useMemo(() => safeParseArtifactContext(artifact.context), [artifact.context]);
 
-  const collectionId = useMemo(() => {
-    // Descriptor artifacts have root_id = "collection:{uuid}" — the target
-    // collection ID is encoded in the root_id prefix. Collection artifacts
-    // opened directly have a plain UUID id which IS the collection.
-    const rootId = artifact.root_id ?? artifact.id ?? '';
-    if (rootId.startsWith('collection:')) {
-      return rootId.slice('collection:'.length);
-    }
-    return rootId;
-  }, [artifact.id, artifact.root_id]);
+  // A collection artifact IS the collection. Its id is the container_id
+  // for the list API. No prefix decoding or context lookups needed.
+  const collectionId = useMemo(() => artifact.id ?? '', [artifact.id]);
 
   const [committedItems, setCommittedItems] = useState<Artifact[]>([]);
   const [isLoading, setIsLoading] = useState(false);

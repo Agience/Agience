@@ -63,8 +63,9 @@ def test_unknown_operator_no_input_returns_400(authed_client):
 
 
 @patch("core.event_dispatcher.resolve_operator_server", return_value=("aria", "extract_units"))
+@patch("services.mcp_service.resolve_builtin_server_id", return_value="aria-artifact-uuid")
 @patch("services.mcp_service.invoke_tool", return_value={"ok": True})
-def test_mcp_dispatch(mock_invoke, mock_resolve, authed_client, mock_db):
+def test_mcp_dispatch(mock_invoke, mock_resolve_id, mock_resolve, authed_client, mock_db):
     resp = authed_client.post("/agents/invoke", json={
         "operator": "extract_units",
         "workspace_id": "ws-1",
@@ -75,7 +76,7 @@ def test_mcp_dispatch(mock_invoke, mock_resolve, authed_client, mock_db):
     assert resp.json() == {"ok": True}
     mock_invoke.assert_called_once()
     call_kwargs = mock_invoke.call_args[1]
-    assert call_kwargs["server_artifact_id"] == "aria"
+    assert call_kwargs["server_artifact_id"] == "aria-artifact-uuid"
     assert call_kwargs["tool_name"] == "extract_units"
     assert call_kwargs["arguments"]["source_artifact_id"] == "a-1"
     assert call_kwargs["arguments"]["workspace_id"] == "ws-1"
@@ -124,8 +125,9 @@ def test_llm_fallback(mock_invoke, mock_resolve, authed_client, mock_db):
 
 
 @patch("core.event_dispatcher.resolve_operator_server", return_value=("aria", "extract_units"))
+@patch("services.mcp_service.resolve_builtin_server_id", return_value="aria-artifact-uuid")
 @patch("services.mcp_service.invoke_tool", return_value={"ok": True})
-def test_operator_params_merged(mock_invoke, mock_resolve, authed_client, mock_db):
+def test_operator_params_merged(mock_invoke, mock_resolve_id, mock_resolve, authed_client, mock_db):
     """operator_params are merged into the params dict."""
     resp = authed_client.post("/agents/invoke", json={
         "operator": "extract_units",

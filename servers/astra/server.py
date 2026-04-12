@@ -428,13 +428,13 @@ async def process_uploaded_content(
         source_artifact_id: Alias for artifact_id (from event dispatch).
         event_type: The lifecycle event that triggered this (informational).
     """
-    effective_id = artifact_id or source_artifact_id
-    if not effective_id:
+    source_artifact_id = artifact_id or source_artifact_id
+    if not source_artifact_id:
         return json.dumps({"status": "skipped", "reason": "no artifact_id"})
 
     # Fetch artifact metadata from Core
     try:
-        artifact = await _get_workspace_artifact(workspace_id, effective_id)
+        artifact = await _get_workspace_artifact(workspace_id, source_artifact_id)
     except httpx.HTTPError as exc:
         return json.dumps({"status": "error", "reason": f"failed to fetch artifact: {exc}"})
 
@@ -463,7 +463,7 @@ async def process_uploaded_content(
             return json.dumps({"status": "skipped", "reason": "no content or content_key"})
 
         try:
-            download_url = await _get_workspace_artifact_content_url(workspace_id, effective_id)
+            download_url = await _get_workspace_artifact_content_url(workspace_id, source_artifact_id)
             async with httpx.AsyncClient() as client:
                 resp = await client.get(download_url, timeout=60)
             resp.raise_for_status()
@@ -489,12 +489,12 @@ async def process_uploaded_content(
         text = text[:2_000_000]
 
     created_ids: list[str] = []
-    filename = context.get("filename") or effective_id
+    filename = context.get("filename") or source_artifact_id
 
     # Create parsed_text artifact
     parsed_context = {
         "type": "ingest.parsed_text",
-        "source_artifact_id": effective_id,
+        "source_artifact_id": source_artifact_id,
         "content_type": "text/plain",
         "title": f"Parsed: {filename}",
     }
@@ -513,7 +513,7 @@ async def process_uploaded_content(
         for chunk in chunks:
             chunk_context = {
                 "type": "ingest.chunk",
-                "source_artifact_id": effective_id,
+                "source_artifact_id": source_artifact_id,
                 "parsed_artifact_id": parsed_id,
                 "chunk_index": chunk["chunk_id"],
                 "content_type": "text/plain",
@@ -528,11 +528,11 @@ async def process_uploaded_content(
                     chunk_ids.append(cid)
                     created_ids.append(cid)
             except httpx.HTTPError:
-                log.warning("Failed to create chunk %d for %s", chunk["chunk_id"], effective_id)
+                log.warning("Failed to create chunk %d for %s", chunk["chunk_id"], source_artifact_id)
 
     return json.dumps({
         "status": "ok",
-        "source_artifact_id": effective_id,
+        "source_artifact_id": source_artifact_id,
         "parsed_artifact_id": parsed_id,
         "chunk_ids": chunk_ids,
         "total_created": len(created_ids),
@@ -855,22 +855,19 @@ def _parse_artifact_context(artifact: dict) -> dict:
 async def ingest_text(
     workspace_id: str,
     source_artifact_id: str,
-    artifact_id: Optional[str] = None,
     create_chunks: bool = True,
 ) -> str:
     """
     Args:
         workspace_id: Workspace containing the source artifact.
         source_artifact_id: Artifact to extract text from.
-        artifact_id: Legacy alias for source_artifact_id.
         create_chunks: If true, split extracted text into chunk artifacts.
     """
-    effective_id = source_artifact_id or artifact_id
-    if not effective_id:
+    if not source_artifact_id:
         return json.dumps({"status": "skipped", "reason": "no source_artifact_id"})
 
     try:
-        artifact = await _get_workspace_artifact(workspace_id, effective_id)
+        artifact = await _get_workspace_artifact(workspace_id, source_artifact_id)
     except httpx.HTTPError:
         return json.dumps({"status": "skipped", "reason": "artifact_not_found"})
 
@@ -891,14 +888,14 @@ async def ingest_text(
     text = inline_content
     if not text:
         try:
-            download_url = await _get_workspace_artifact_content_url(workspace_id, effective_id)
+            download_url = await _get_workspace_artifact_content_url(workspace_id, source_artifact_id)
             if download_url:
                 async with httpx.AsyncClient() as client:
                     dl_resp = await client.get(download_url, timeout=60)
                 dl_resp.raise_for_status()
                 text = dl_resp.content.decode("utf-8", errors="replace")
         except Exception as exc:
-            log.warning("ingest_text: failed to download content for %s: %s", effective_id, exc)
+            log.warning("ingest_text: failed to download content for %s: %s", source_artifact_id, exc)
 
     if not text or not text.strip():
         return json.dumps({"status": "skipped", "reason": "no_text_extracted"})
@@ -911,9 +908,9 @@ async def ingest_text(
     # Create parsed_text artifact
     parsed_ctx = {
         "type": "ingest.parsed_text",
-        "source_artifact_id": effective_id,
+        "source_artifact_id": source_artifact_id,
         "content_type": "text/plain",
-        "title": f"Parsed: {source_ctx.get('filename') or effective_id}",
+        "title": f"Parsed: {source_ctx.get('filename') or source_artifact_id}",
     }
     try:
         parsed_artifact = await _create_workspace_artifact(workspace_id, parsed_ctx, text)
@@ -929,13 +926,13 @@ async def ingest_text(
         for chunk in chunks:
             chunk_ctx = {
                 "type": "ingest.chunk",
-                "source_artifact_id": effective_id,
+                "source_artifact_id": source_artifact_id,
                 "parsed_artifact_id": parsed_id,
                 "chunk_index": chunk["chunk_id"],
                 "start_token": chunk["start_token"],
                 "end_token": chunk["end_token"],
                 "content_type": "text/plain",
-                "title": f"Chunk {chunk['chunk_id']}: {source_ctx.get('filename') or effective_id}",
+                "title": f"Chunk {chunk['chunk_id']}: {source_ctx.get('filename') or source_artifact_id}",
             }
             try:
                 chunk_artifact = await _create_workspace_artifact(workspace_id, chunk_ctx, chunk["text"])
@@ -943,11 +940,11 @@ async def ingest_text(
                 chunk_ids.append(cid)
                 created_ids.append(cid)
             except httpx.HTTPError:
-                log.warning("ingest_text: failed creating chunk %d for %s", chunk["chunk_id"], effective_id)
+                log.warning("ingest_text: failed creating chunk %d for %s", chunk["chunk_id"], source_artifact_id)
 
     return json.dumps({
         "status": "ok",
-        "source_artifact_id": effective_id,
+        "source_artifact_id": source_artifact_id,
         "parsed_artifact_id": parsed_id,
         "chunk_ids": chunk_ids,
         "total_created": len(created_ids),
@@ -989,31 +986,28 @@ async def list_streams(source_artifact_id: Optional[str] = None) -> str:
 @mcp.tool(description="Finalize a completed stream session card into a transcript card.")
 async def transcribe(
     workspace_id: str,
-    session_artifact_id: Optional[str] = None,
-    source_artifact_id: Optional[str] = None,
+    session_artifact_id: str,
     title: Optional[str] = None,
 ) -> str:
     """
     Args:
         workspace_id: Workspace that owns the stream session card.
         session_artifact_id: The completed stream session card to finalize.
-        source_artifact_id: Legacy alias for session_artifact_id.
         title: Optional transcript title override.
     """
-    resolved_id = session_artifact_id or source_artifact_id
-    if not resolved_id:
-        return "Error: provide session_artifact_id (or legacy source_artifact_id)."
+    if not session_artifact_id:
+        return "Error: session_artifact_id is required."
 
     try:
-        artifact = await _get_workspace_artifact(workspace_id, resolved_id)
+        artifact = await _get_workspace_artifact(workspace_id, session_artifact_id)
     except httpx.HTTPError as exc:
-        return f"Error: failed to load session artifact {resolved_id}: {exc}"
+        return f"Error: failed to load session artifact {session_artifact_id}: {exc}"
 
     transcript_text = (artifact.get("content") or "").strip()
     if not transcript_text:
         return json.dumps({
             "error": "Session artifact has no transcript content yet. Ensure the stream has ended.",
-            "session_artifact_id": resolved_id,
+            "session_artifact_id": session_artifact_id,
         })
 
     raw_ctx = artifact.get("context") or {}
@@ -1029,7 +1023,7 @@ async def transcribe(
         "content_type": "text/markdown",
         "title": artifact_title,
         "type": "transcript",
-        "source_artifact_id": resolved_id,
+        "source_artifact_id": session_artifact_id,
     }
 
     try:
@@ -1039,7 +1033,7 @@ async def transcribe(
 
     return json.dumps({
         "transcript_artifact_id": output_artifact.get("id"),
-        "session_artifact_id": resolved_id,
+        "session_artifact_id": session_artifact_id,
         "title": artifact_title,
         "length": len(transcript_text),
     }, indent=2)

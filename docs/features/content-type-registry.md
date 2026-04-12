@@ -53,27 +53,28 @@ Create `types/<category>/<subtype>/type.json`:
 
 ```json
 {
-  "mime": "application/vnd.acme.recipe+json",
+  "content_type": "application/vnd.acme.recipe+json",
   "version": 1,
-  "label": "Recipe",
-  "inherits": "application/json"
+  "extensions": [".json"],
+  "inherits": ["application/json"],
+  "description": "Recipe document",
+  "ui": {
+    "version": 1,
+    "label": "Recipe",
+    "icon": "chef-hat",
+    "color": "#16a34a",
+    "modes": ["floating"],
+    "states": ["view", "edit"],
+    "default_mode": "floating",
+    "default_state": "view",
+    "is_container": false,
+    "creatable": true,
+    "viewer": "recipe"
+  }
 }
 ```
 
-Add `presentation.json` beside it with display metadata:
-
-```json
-{
-  "label": "Recipe",
-  "icon": "chef-hat",
-  "color": "#16a34a",
-  "modes": ["floating"],
-  "viewer": "recipe",
-  "provider": null,
-  "creatable": true,
-  "is_container": false
-}
-```
+Display metadata (label, icon, color, viewer key, modes) lives in the `"ui"` key inside `type.json`. There is no separate `presentation.json` file.
 
 If the type lives on a first-party server, place these files under `servers/<name>/ui/<category>/<subtype>/` instead. Server-owned definitions take precedence over the `types/` directory.
 
@@ -134,7 +135,7 @@ If the type needs different implementations for different UX surfaces, add `fron
 }
 ```
 
-If `frontend.json` is absent, the resolver uses the `presentation.json` `viewer` key and the standard bundled path.
+If `frontend.json` is absent, the resolver uses the `type.json` `ui.viewer` key and the standard bundled path.
 
 ---
 
@@ -185,7 +186,7 @@ If no implementation matches the requested plane, the resolver falls back throug
 
 The registry is backward-compatible with all existing types:
 
-1. If `frontend.json` is absent, the resolver uses `presentation.json` `viewer` and `provider` keys — unchanged behavior.
+1. If `frontend.json` is absent, the resolver uses `type.json` `ui.viewer` key — unchanged behavior.
 2. If only bundled implementations are declared, behavior is unchanged.
 3. If a remote implementation fails to load, the resolver falls back to bundled.
 4. If no compatible implementation exists, the platform default viewer is used.

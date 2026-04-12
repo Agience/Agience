@@ -11,7 +11,7 @@ vi.mock('../../../api/workspaces', () => ({
   listWorkspaceArtifacts: vi.fn(),
   addArtifactToWorkspace: vi.fn(),
   updateWorkspaceArtifact: vi.fn(),
-  deleteWorkspaceArtifact: vi.fn(),
+  removeWorkspaceArtifact: vi.fn(),
   revertWorkspaceArtifact: vi.fn(),
   commitWorkspace: vi.fn(),
   previewWorkspaceCommit: vi.fn(),
@@ -51,7 +51,7 @@ import {
   listWorkspaceArtifacts,
   addArtifactToWorkspace,
   updateWorkspaceArtifact,
-  deleteWorkspaceArtifact,
+  removeWorkspaceArtifact,
   revertWorkspaceArtifact,
   previewWorkspaceCommit,
   commitWorkspace,
@@ -510,7 +510,7 @@ describe('WorkspaceProvider', () => {
 
   describe('Remove Artifact', () => {
     it('removes artifact from state after deletion', async () => {
-      deleteWorkspaceArtifact.mockResolvedValueOnce(undefined);
+      removeWorkspaceArtifact.mockResolvedValueOnce(undefined);
       
       function DeleteConsumer() {
         const workspace = useWorkspace();
@@ -543,7 +543,7 @@ describe('WorkspaceProvider', () => {
         expect(screen.getByTestId('artifact-count')).toHaveTextContent('2');
       });
       
-      expect(deleteWorkspaceArtifact).toHaveBeenCalledWith('ws-1', '1');
+      expect(removeWorkspaceArtifact).toHaveBeenCalledWith('ws-1', '1');
     });
   });
 

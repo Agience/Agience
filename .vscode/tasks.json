@@ -4,16 +4,25 @@
     {
       "label": "Agience: Publish public main (first commit)",
       "type": "shell",
-      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .scripts\\publish_public.ps1 -Version '${input:publicVersion}' -CreateOrphan",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .scripts\\publish_public.ps1 -Message '${input:message}' -CreateOrphan",
       "options": {
         "cwd": "${workspaceFolder}"
       },
       "problemMatcher": []
     },
     {
-      "label": "Agience: Publish public main (stacked)",
+      "label": "Agience: Publish public main",
       "type": "shell",
-      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .scripts\\publish_public.ps1 -Version '${input:publicVersion}'",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .scripts\\publish_public.ps1 -Message '${input:message}'",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Agience: Publish public release",
+      "type": "shell",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .scripts\\publish_public.ps1 -Version '${input:version}' -ReleaseBranch",
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -22,10 +31,16 @@
   ],
   "inputs": [
     {
-      "id": "publicVersion",
+      "id": "version",
       "type": "promptString",
-      "description": "Semantic version for the public publish",
-      "default": "0.0.0"
+      "description": "Semantic version for the public publish (e.g. 0.2.0)",
+      "default": "release"
+    },
+    {
+      "id": "message",
+      "type": "promptString",
+      "description": "Commit message for the public publish",
+      "default": "publish"
     }
   ]
 }

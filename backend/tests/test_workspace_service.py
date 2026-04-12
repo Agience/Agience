@@ -332,7 +332,6 @@ class TestUpdateArtifactStateMachine:
         assert new_draft.root_id == committed.root_id
         assert new_draft.id != committed.id
         assert new_draft.state == ArtifactEntity.STATE_DRAFT
-        # Small text stays inline even after S3 upload as a fallback.
         assert out.content == "edited"
 
     def test_store_content_in_s3_keeps_small_text_inline_clears_large(self):
@@ -380,6 +379,54 @@ class TestUpdateArtifactStateMachine:
             )
         upd.assert_not_called()
         assert out is art
+
+    def test_update_content_persists_new_value(self):
+        """Editing content on a draft artifact stores the new value and marks dirty."""
+        db = MagicMock()
+        art = _artifact(content="old content")
+        with (
+            patch("services.workspace_service.arango.get_collection_by_id", return_value=_ws()),
+            patch("services.workspace_service.arango.get_artifact", return_value=art),
+            patch("services.workspace_service.arango.update_artifact") as upd,
+        ):
+            out = ws_svc.update_artifact(
+                db, "user-1", "ws-1", "a-1", content="new content", reindex=False
+            )
+        upd.assert_called_once()
+        assert out.content == "new content"
+
+    def test_update_context_persists_new_value(self):
+        """Editing context on a draft artifact stores the new value and marks dirty."""
+        db = MagicMock()
+        art = _artifact(context='{"content_type":"text/plain","title":"old"}')
+        with (
+            patch("services.workspace_service.arango.get_collection_by_id", return_value=_ws()),
+            patch("services.workspace_service.arango.get_artifact", return_value=art),
+            patch("services.workspace_service.arango.update_artifact") as upd,
+        ):
+            new_ctx = '{"content_type":"text/plain","title":"new"}'
+            out = ws_svc.update_artifact(
+                db, "user-1", "ws-1", "a-1", context=new_ctx, reindex=False
+            )
+        upd.assert_called_once()
+        assert out.context == new_ctx
+
+    def test_update_content_and_context_together(self):
+        """Both content and context can be updated in a single call."""
+        db = MagicMock()
+        art = _artifact(content="old", context='{"content_type":"text/plain"}')
+        with (
+            patch("services.workspace_service.arango.get_collection_by_id", return_value=_ws()),
+            patch("services.workspace_service.arango.get_artifact", return_value=art),
+            patch("services.workspace_service.arango.update_artifact") as upd,
+        ):
+            out = ws_svc.update_artifact(
+                db, "user-1", "ws-1", "a-1",
+                content="new", context='{"content_type":"text/markdown"}',
+                reindex=False,
+            )
+        upd.assert_called_once()
+        assert out.content == "new"
 
 
 # ---------------------------------------------------------------------------
@@ -564,6 +611,83 @@ class TestCommitWorkspace:
 # ---------------------------------------------------------------------------
 # Move / order
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# remove_artifact_from_workspace
+# ---------------------------------------------------------------------------
+
+class TestRemoveArtifactFromWorkspace:
+    @pytest.fixture(autouse=True)
+    def _silence(self):
+        with patch("services.workspace_service._emit_event"):
+            yield
+
+    def test_404_when_artifact_not_found(self):
+        db = MagicMock()
+        with (
+            patch("services.workspace_service.arango.get_collection_by_id", return_value=_ws()),
+            patch("services.workspace_service.arango.get_artifact", return_value=None),
+            patch("services.workspace_service.arango.get_edge", return_value=None),
+            patch("services.workspace_service.arango.get_current_in_collection", return_value=None),
+        ):
+            with pytest.raises(HTTPException) as ei:
+                ws_svc.remove_artifact_from_workspace(db, "user-1", "ws-1", "missing")
+        assert ei.value.status_code == 404
+
+    def test_removes_edge_for_committed_artifact(self):
+        """Committed artifact: edge removed, artifact doc kept."""
+        db = MagicMock()
+        art = _artifact(state=ArtifactEntity.STATE_COMMITTED)
+        with (
+            patch("services.workspace_service.arango.get_collection_by_id", return_value=_ws()),
+            patch("services.workspace_service.arango.get_artifact", return_value=art),
+            patch("services.workspace_service.arango.remove_artifact_from_collection") as rm_edge,
+            patch("services.workspace_service.arango.delete_artifact") as del_art,
+        ):
+            result = ws_svc.remove_artifact_from_workspace(db, "user-1", "ws-1", "a-1")
+
+        rm_edge.assert_called_once_with(db, "ws-1", art.root_id)
+        del_art.assert_not_called()
+        assert result.id == art.id
+
+    def test_removes_edge_and_deletes_draft_doc(self):
+        """Draft artifact owned by this workspace: edge removed and draft doc deleted."""
+        db = MagicMock()
+        art = _artifact(state=ArtifactEntity.STATE_DRAFT, collection_id="ws-1")
+        with (
+            patch("services.workspace_service.arango.get_collection_by_id", return_value=_ws()),
+            patch("services.workspace_service.arango.get_artifact", return_value=art),
+            patch("services.workspace_service.arango.get_edge", return_value={"_id": "ws-1/a-1"}),
+            patch("services.workspace_service.arango.remove_artifact_from_collection") as rm_edge,
+            patch("services.workspace_service.arango.get_current_in_collection", return_value=art),
+            patch("services.workspace_service.arango.delete_artifact") as del_art,
+            patch("search.ingest.pipeline_unified.delete_artifact_from_index"),
+        ):
+            result = ws_svc.remove_artifact_from_workspace(db, "user-1", "ws-1", "a-1")
+
+        rm_edge.assert_called_once_with(db, "ws-1", art.root_id)
+        del_art.assert_called_once_with(db, art.id)
+        assert result.id == art.id
+
+    def test_falls_back_to_get_current_when_not_in_workspace(self):
+        """Artifact in different collection: fallback to get_current_in_collection."""
+        db = MagicMock()
+        art = _artifact(state=ArtifactEntity.STATE_COMMITTED, collection_id="other-ws")
+        with (
+            patch("services.workspace_service.arango.get_collection_by_id", return_value=_ws()),
+            patch("services.workspace_service.arango.get_artifact", return_value=art),
+            patch(
+                "services.workspace_service.arango.get_current_in_collection",
+                return_value=_artifact(state=ArtifactEntity.STATE_COMMITTED),
+            ) as get_current,
+            patch("services.workspace_service.arango.remove_artifact_from_collection"),
+            patch("services.workspace_service.arango.delete_artifact") as del_art,
+        ):
+            ws_svc.remove_artifact_from_workspace(db, "user-1", "ws-1", "a-1")
+
+        get_current.assert_called_once_with(db, "ws-1", "a-1")
+        del_art.assert_not_called()
+
 
 class TestMoveAndOrder:
     @pytest.fixture(autouse=True)

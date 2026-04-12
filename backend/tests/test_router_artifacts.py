@@ -72,7 +72,7 @@ def anon_client(client: AsyncClient):
     app.dependency_overrides.pop(get_auth, None)
 
 
-def _coll_doc(content_type: str = "application/json") -> dict:
+def _coll_doc(content_type: str = WORKSPACE_CONTENT_TYPE) -> dict:
     return {
         "_key": "container-1",
         "name": "Container",
@@ -433,6 +433,61 @@ class TestUpdateArtifact:
         assert r.json()["content"] == "new"
 
     @pytest.mark.asyncio
+    async def test_update_artifact_with_content_type_routes_to_artifact_update(
+        self, client: AsyncClient
+    ):
+        """Artifacts created via the type picker have a top-level content_type
+        (e.g. text/markdown). PATCH must still route to the artifact update
+        path, not the container update path. Regression test for the bug where
+        _is_collection returned True for any non-None content_type."""
+        arango = MagicMock()
+
+        # Artifact with a content_type that is NOT a container type.
+        typed_doc = {
+            "_key": "typed-1",
+            "id": "typed-1",
+            "root_id": "typed-1",
+            "collection_id": "container-1",
+            "context": '{"content_type":"text/markdown"}',
+            "content": "# old",
+            "content_type": "text/markdown",
+            "state": "draft",
+            "created_by": "user-123",
+        }
+
+        art = MagicMock()
+        art.get.side_effect = lambda key: typed_doc if key == "typed-1" else None
+        arango.collection.return_value = art
+
+        from core.dependencies import get_arango_db
+
+        app.dependency_overrides[get_arango_db] = lambda: arango
+
+        updated = ArtifactEntity(
+            id="typed-1",
+            root_id="typed-1",
+            collection_id="container-1",
+            context='{"content_type":"text/markdown"}',
+            content="# new content",
+            state="draft",
+            content_type="text/markdown",
+        )
+        try:
+            with patch(
+                "services.workspace_service.update_artifact", return_value=updated
+            ) as upd:
+                r = await client.patch(
+                    "/artifacts/typed-1",
+                    json={"content": "# new content"},
+                )
+        finally:
+            app.dependency_overrides.pop(get_arango_db, None)
+
+        assert r.status_code == 200
+        upd.assert_called_once()
+        assert r.json()["content"] == "# new content"
+
+    @pytest.mark.asyncio
     async def test_update_artifact_404_when_missing(self, client: AsyncClient):
         arango = MagicMock()
         art = MagicMock()
@@ -485,6 +540,50 @@ class TestDeleteArtifact:
             r = await client.delete("/artifacts/missing")
         finally:
             app.dependency_overrides.pop(get_arango_db, None)
+        assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# POST /artifacts/{artifact_id}/remove — remove from workspace (soft)
+# ---------------------------------------------------------------------------
+
+class TestRemoveArtifactFromWorkspace:
+    @pytest.mark.asyncio
+    async def test_requires_auth(self, anon_client: AsyncClient):
+        r = await anon_client.post("/artifacts/art-1/remove", json={"container_id": "ws-1"})
+        assert r.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_happy_path_returns_removed_response(self, client: AsyncClient):
+        from entities.artifact import Artifact as ArtifactEntity
+        removed = ArtifactEntity(
+            id="art-1",
+            root_id="art-1",
+            collection_id="ws-1",
+            context='{"content_type":"text/plain"}',
+            content="hi",
+            state=ArtifactEntity.STATE_DRAFT,
+            created_by="user-123",
+        )
+        with patch(
+            "services.workspace_service.remove_artifact_from_workspace",
+            return_value=removed,
+        ) as svc:
+            r = await client.post("/artifacts/art-1/remove", json={"container_id": "ws-1"})
+
+        assert r.status_code == 200
+        body = r.json()
+        assert body == {"id": "art-1", "removed": True, "container_id": "ws-1"}
+        svc.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_404_propagates(self, client: AsyncClient):
+        from fastapi import HTTPException
+        with patch(
+            "services.workspace_service.remove_artifact_from_workspace",
+            side_effect=HTTPException(status_code=404, detail="Artifact not found"),
+        ):
+            r = await client.post("/artifacts/missing/remove", json={"container_id": "ws-1"})
         assert r.status_code == 404
 
 

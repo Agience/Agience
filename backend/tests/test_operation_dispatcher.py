@@ -1,12 +1,12 @@
-"""Unit tests for Phase 0 operation dispatcher primitives.
+"""Unit tests for operation dispatcher primitives.
 
 Covers:
 - event_bus Event / EventFilter matching
-- event_bus unified publish + legacy shim fan-out
+- event_bus unified publish
 - types_service.resolve_operation normalization
 - handler_registry ref resolution
 - operation_dispatcher emit envelope (before/after/error ordering,
-  OperationNotDeclared fallback, grant check)
+  OperationNotDeclared → 404, grant check)
 """
 
 from __future__ import annotations
@@ -746,15 +746,15 @@ def test_resolve_builtin_server_id_returns_registered_uuid(monkeypatch):
     assert mcp_service.resolve_builtin_server_id("aria") == "uuid-aria-1234"
 
 
-def test_resolve_builtin_server_id_falls_back_to_slug(monkeypatch):
-    """When the topology registry has not been populated yet (early
-    bootstrap, unit tests), the helper falls back to the bare slug so the
-    legacy slug-string dispatch path keeps working."""
+def test_resolve_builtin_server_id_raises_when_not_registered(monkeypatch):
+    """When the topology registry has not been populated, the helper raises
+    ValueError — callers must ensure bootstrap has completed."""
     from services import mcp_service
     from services import platform_topology
 
     monkeypatch.setattr(platform_topology, "get_id_optional", lambda slug: None)
-    assert mcp_service.resolve_builtin_server_id("aria") == "aria"
+    with pytest.raises(ValueError, match="aria"):
+        mcp_service.resolve_builtin_server_id("aria")
 
 
 def test_resolve_builtin_server_id_handles_empty_input():

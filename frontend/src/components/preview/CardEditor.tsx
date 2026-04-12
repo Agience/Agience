@@ -263,30 +263,11 @@ export function CardEditor({ artifactId, onClose }: CardEditorProps) {
   };
 
   const handleRevert = async () => {
-    const confirmed = await dangerConfirm.confirm({
-      title: CARD_CONFIRM.REVERT_TITLE,
-      description: CARD_CONFIRM.REVERT_DESCRIPTION,
-      confirmLabel: CARD_CONFIRM.REVERT_CONFIRM,
-      cancelLabel: BUTTON_LABELS.CANCEL,
-      tone: 'warn'
-    });
-    
-    if (confirmed) {
-      await revertArtifact(String(artifact.id));
-    }
+    await revertArtifact(String(artifact.id));
   };
 
   const handleArchive = async () => {
-    const confirmed = await dangerConfirm.confirm({
-      title: CARD_CONFIRM.ARCHIVE_TITLE,
-      description: CARD_CONFIRM.ARCHIVE_DESCRIPTION,
-      confirmLabel: CARD_CONFIRM.ARCHIVE_CONFIRM,
-      cancelLabel: BUTTON_LABELS.CANCEL,
-      tone: 'warn'
-    });
-    if (confirmed) {
-      await updateArtifact({ id: String(artifact.id), state: 'archived' });
-    }
+    await updateArtifact({ id: String(artifact.id), state: 'archived' });
   };
 
   const handleRestore = async () => {

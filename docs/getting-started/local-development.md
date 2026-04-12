@@ -190,7 +190,7 @@ The dev server starts at `http://localhost:5173` and proxies API calls to the ba
 
 **What `npm run dev` does:**
 
-- Runs a `predev` script that stamps `frontend/public/version.json` from `build_info.json`
+- Vite reads `build_info.json` and injects `__APP_VERSION__` as a compile-time define
 - Starts the Vite HMR (Hot Module Replacement) dev server
 - Opens `http://localhost:5173` — navigate there in your browser
 

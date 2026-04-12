@@ -7,8 +7,8 @@ Design:
 - On first login every new user is granted READ access to the platform-managed
   sub-collections: Start Here, Platform Artifacts, Agience Servers, Agience Tools,
   and Agience Agents (defined in bootstrap_types.USER_READABLE_SEED_SLUGS).
-- Collection-descriptor artifacts from Inbox Seeds are materialized into the user's
-  Inbox workspace for navigation.  Individual Start Here docs stay in their collection
+- Curated collection artifacts from Inbox Seeds are materialized into the user's
+    Inbox workspace for navigation. Individual Start Here docs stay in their collection
   and are NOT flattened into the inbox.
 - config.SEED_COLLECTION_SLUGS (from config) remains for operator-defined custom seed
   collections; its default is now empty so no custom seeds are created unless
@@ -127,11 +127,11 @@ def apply_inbox_seeds_to_user(
 ) -> None:
     """
     Grant the user read access to platform-managed seed sub-collections on
-    first login, and materialize Inbox Seeds descriptor artifacts into their
+    first login, and materialize curated Inbox Seeds artifacts into their
     Inbox workspace.
 
     The Agience Inbox Seeds parent collection is granted READ here so users can read
-    the collection-descriptor artifacts that are materialized into their Inbox workspace.
+    the curated artifacts that are materialized into their Inbox workspace.
     Any operator-configured custom seed collections (config.SEED_COLLECTION_SLUGS) are also granted.
 
     Idempotent -- upsert semantics mean re-running is a no-op if grants already exist.
@@ -253,7 +253,7 @@ def _seed_inbox_workspace_from_platform_collections(
     # Inbox workspace id == user_id (intentional convention)
     inbox_workspace_id = user_id
 
-    # Materialize only curated inbox descriptor artifacts (from Inbox Seeds)
+    # Materialize only curated artifacts from Inbox Seeds.
     # so users can navigate seed collections without flattening all child
     # artifacts into every inbox workspace.
     for col_slug in INBOX_MATERIALIZATION_SLUGS:

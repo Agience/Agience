@@ -128,3 +128,6 @@ demo-env.txt
 .claude/worktrees/
 .claude/plans/
 .claude/*.local.*
+
+#VS COde
+.vscode/settings.json

@@ -114,6 +114,8 @@ Aperture filtering (semantic neighborhood control) applies only to the kNN resul
   "content_types": ["application/pdf"],
   "use_hybrid": true,
   "aperture": 0.75,
+  "sort": "relevance",
+  "highlight": true,
   "from": 0,
   "size": 20
 }
@@ -126,6 +128,8 @@ Aperture filtering (semantic neighborhood control) applies only to the kNN resul
 | `content_types` | Optional MIME type filter |
 | `use_hybrid` | Force hybrid on/off (overrides query-derived mode) |
 | `aperture` | Semantic neighborhood threshold (0–1). Lower = stricter semantic match. |
+| `sort` | `"relevance"` (default) or `"recency"` |
+| `highlight` | Whether to return highlighted snippets (default `true`) |
 | `from` | Pagination offset |
 | `size` | Page size |
 

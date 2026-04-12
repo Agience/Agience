@@ -108,11 +108,11 @@ def db_get_artifacts_by_collection_id(db, collection_id):
     return [Artifact.from_dict(r) for r in rows]
 
 
-def db_add_cards_to_collection_batch(db, collection_id, pairs):
-    """Pairs were (root_id, version_id) in the legacy API; we just need root_ids."""
+def db_add_cards_to_collection_batch(db, collection_id, root_ids):
+    """Batch-insert collection_artifacts edges for the given root IDs."""
     prev = _db_get_last_order_key(db, collection_id)
     edges = []
-    for (rid, _vid) in pairs:
+    for rid in root_ids:
         prev = _db_after_key(prev)
         edges.append((rid, prev))
     return _db_add_edges_batch(db, collection_id, edges)
@@ -464,8 +464,8 @@ def create_and_add_artifacts_batch(
     created = db_create_artifacts_batch(db, created) or []
 
     # Batch link all artifacts to the collection (brand-new roots)
-    pairs = [(str(c.root_id), c.id) for c in created]
-    db_add_cards_to_collection_batch(db, collection_id, pairs)
+    root_ids = [str(c.root_id) for c in created]
+    db_add_cards_to_collection_batch(db, collection_id, root_ids)
 
     if record and add_version_ids:
         record_collection_commit(
@@ -580,32 +580,6 @@ def edit_artifact_in_collection(
     return created
 
 
-def db_remove_artifact_from_collection(
-    db: StandardDatabase,
-    user_id: str,
-    collection_id: str,
-    *,
-    artifact_root_id: str,
-    record: bool = True,
-) -> None:
-    """
-    Legacy root-based unlink. Prefer remove_artifact_from_collection_by_version for accurate provenance.
-    """
-    linked = db_get_artifact_by_collection_id_and_root_id(db, collection_id, artifact_root_id)
-    linked_version_id = getattr(linked, "id", None) if linked else None
-
-    db_delete_collection_artifact_by_collection_and_root(db, collection_id, artifact_root_id)
-
-    if record:
-        record_collection_commit(
-            db, user_id, collection_id,
-            removes=[linked_version_id] if linked_version_id else [],
-            message=f"Removed artifact root {artifact_root_id}",
-        )
-
-    event_bus.emit_artifact_event_sync(collection_id, "artifact.deleted", {
-        "artifact_id": artifact_root_id, "collection_id": collection_id
-    })
 
 
 def remove_artifact_from_collection_by_version(

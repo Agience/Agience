@@ -321,7 +321,7 @@ Handlers call core services via their public API. Handlers MUST NOT call databas
 Presentation components MUST NOT branch on `contentType.id`, `contentType.mime`, or any type-specific identifier. Presentation resolves types through the registry and delegates all type-specific rendering to handler viewers.
 
 ### P7 — Registry as Indirection
-All type-specific wiring (viewer component, icon, provider, actions) flows through the registry (`content-types.ts`, `viewer-map.ts`, `provider-map.ts`, `icon-map.ts`). Presentation reads from the registry — it never imports handler code directly.
+All type-specific wiring (viewer component, icon, provider, actions) flows through the registry (`content-types.ts`, `viewer-map.ts`, `icon-map.ts`). Presentation reads from the registry — it never imports handler code directly.
 
 ### P8 — Action Dispatch, Not Action Handling
 Presentation dispatches generic action IDs (`open`, `delete`, `archive`). If a content type needs custom actions, it declares them in `presentation.json` with unique IDs. Presentation renders them generically; the handler provides the implementation.
@@ -364,7 +364,7 @@ Before placing any code, ask these questions:
 | Directory / File | Layer | Notes |
 |---|---|---|
 | `backend/core/` | **Core** | Config, dependencies, embeddings, key manager |
-| `backend/db/` | **Core** | Database adapters (arango, arango_workspace, opensearch) |
+| `backend/db/` | **Core** | Database adapters (arango, arango_identity, opensearch) |
 | `backend/entities/` | **Core** | Entity models (type-agnostic) |
 | `backend/schemas/` | **Core** | DB schema initialization |
 | `backend/search/` | **Core** | Search infrastructure |
@@ -396,7 +396,7 @@ Before placing any code, ask these questions:
 | `frontend/src/auth/` | **Core** | AuthProvider, OAuth flow |
 | `frontend/src/context/workspace/` | **Core** | WorkspaceProvider (type-agnostic state) |
 | `frontend/src/context/auth/` | **Core** | Auth context |
-| `frontend/src/registry/` | **Core** | Type registry (viewer-map, icon-map, provider-map, content-types) |
+| `frontend/src/registry/` | **Core** | Type registry (viewer-map, icon-map, content-types) |
 | `frontend/src/isolation/` | **Core** | MCP Apps host infrastructure — `McpAppHost.tsx` renders server-owned `ui://` resources in sandboxed iframes with MCP Apps JSON-RPC `postMessage` protocol. |
 | `frontend/src/hooks/` | **Core** | Custom React hooks |
 | `frontend/src/lib/` | **Core** | Utility libraries |

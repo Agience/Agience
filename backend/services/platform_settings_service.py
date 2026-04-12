@@ -19,7 +19,7 @@ import logging
 import os
 from typing import Optional
 
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import Fernet
 from arango.database import StandardDatabase
 
 from core.key_manager import get_encryption_key
@@ -109,7 +109,7 @@ class PlatformSettingsService:
         cache = {}
         secret_flags = {}
         for row in rows:
-            key = row.get("id") or row.get("key")
+            key = row.get("id")
             if not key:
                 continue
             cache[key] = row.get("value", "")
@@ -296,23 +296,12 @@ class PlatformSettingsService:
     # -- Encryption helpers ------------------------------------------------
 
     def _encrypt(self, plaintext: str) -> str:
-        try:
-            cipher = Fernet(get_encryption_key().encode())
-            return cipher.encrypt(plaintext.encode()).decode()
-        except Exception:
-            logger.warning("Failed to encrypt setting value; storing as plaintext")
-            return plaintext
+        cipher = Fernet(get_encryption_key().encode())
+        return cipher.encrypt(plaintext.encode()).decode()
 
     def _decrypt(self, ciphertext: str) -> str:
-        try:
-            cipher = Fernet(get_encryption_key().encode())
-            return cipher.decrypt(ciphertext.encode()).decode()
-        except InvalidToken:
-            # Might be plaintext (from before encryption was set up)
-            return ciphertext
-        except Exception:
-            logger.warning("Failed to decrypt setting value; returning as-is")
-            return ciphertext
+        cipher = Fernet(get_encryption_key().encode())
+        return cipher.decrypt(ciphertext.encode()).decode()
 
 
 # Module-level singleton
