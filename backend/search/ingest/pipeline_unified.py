@@ -140,7 +140,8 @@ def index_artifact(
         if should_chunk_content(content_text):
             for chunk in chunk_text(content_text):
                 text = chunk["text"]
-                embedding = _embeddings([text])[0] if text else None
+                _emb = _embeddings([text]) if text else []
+                embedding = _emb[0] if _emb else None
                 chunk_docs.append({
                     "_id": _build_chunk_id(base_doc["root_id"], base_doc["version_id"], chunk["chunk_id"]),
                     **base_doc,
@@ -149,7 +150,8 @@ def index_artifact(
                     "content_vector": embedding,
                 })
         else:
-            embedding = _embeddings([content_text])[0] if content_text else None
+            _emb = _embeddings([content_text]) if content_text else []
+            embedding = _emb[0] if _emb else None
             chunk_docs.append({
                 "_id": _build_chunk_id(base_doc["root_id"], base_doc["version_id"], 0),
                 **base_doc,
