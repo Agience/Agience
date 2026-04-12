@@ -289,12 +289,23 @@ def delete_setup_token(path: Optional[Path] = None) -> None:
     if token_path.exists():
         try:
             token_path.unlink()
+            logger.info("Setup token deleted from %s", token_path)
         except PermissionError:
             # Windows may mark the file read-only; strip that attribute first.
             import stat
             token_path.chmod(stat.S_IWRITE)
             token_path.unlink()
-        logger.info("Setup token deleted from %s", token_path)
+            logger.info("Setup token deleted from %s", token_path)
+        except OSError as e:
+            # Keys directory is mounted read-only (Docker production and dev).
+            # The file cannot be removed from within the container. Token is
+            # cleared from memory below; DB-backed platform_settings.needs_setup()
+            # is authoritative on restart, so the stale file is harmless.
+            logger.warning(
+                "Setup token file at %s could not be deleted (%s). "
+                "Token invalidated in memory; DB state is authoritative on restart.",
+                token_path, e,
+            )
     _setup_token = None
 
 

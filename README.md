@@ -76,9 +76,31 @@ See [ROADMAP.md](ROADMAP.md) for the full capability inventory and what's coming
 
 ## Getting Started
 
-### Run Agience at Home (pre-built images)
+### Run Agience (canary build — no build tools required)
 
-The fastest way to run Agience locally using pre-built Docker images — no build tools required. Clone the [agience-home](https://github.com/Agience/agience-home) repo and follow the setup instructions there.
+Pull and run the latest pre-built images directly from this repo. No Node, Python, or build tools needed — just Docker.
+
+```
+git clone https://github.com/Agience/agience-core.git
+cd agience-core
+agience canary
+```
+
+**Linux / macOS:**
+```bash
+./agience canary
+```
+
+Images are tagged `:canary` and published automatically on every merge to `main`. The setup wizard runs on first boot.
+
+To force-pull the latest images after an update:
+```
+agience canary -f
+```
+
+### Run Agience at Home (stable build)
+
+For a stable, pre-configured home deployment using pinned release images, clone the [agience-home](https://github.com/Agience/agience-home) repo and follow the setup instructions there.
 
 The one-command hosted installer (`get.agience.ai`) is coming soon.
 

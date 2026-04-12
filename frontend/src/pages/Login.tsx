@@ -169,8 +169,11 @@ const Login: React.FC = () => {
         setAuthData(res.access_token)
       }
     } catch (err) {
+      const status = (err as { response?: { status?: number } }).response?.status
       const msg = err instanceof Error ? err.message : 'Authentication failed'
-      if (msg.toLowerCase().includes('not found') || msg.toLowerCase().includes('no account')) {
+      if (status && status >= 500) {
+        setError('Service temporarily unavailable. Please try again.')
+      } else if (msg.toLowerCase().includes('not found') || msg.toLowerCase().includes('no account')) {
         setPhase('register')
         setError(null)
       } else {

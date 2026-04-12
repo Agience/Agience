@@ -37,6 +37,7 @@ REM Parse all arguments
 if "%1"=="" goto parse_done
 if "%1"=="full" set MODE=full
 if "%1"=="dev" set MODE=dev
+if "%1"=="canary" set MODE=canary
 if "%1"=="test" set MODE=test
 if "%1"=="--force-docker" set FORCE_DOCKER=true
 if "%1"=="-f" set FORCE_DOCKER=true
@@ -141,6 +142,7 @@ echo Modes:
 echo   full    - Everything in Docker: infra + backend + frontend + servers (default)
 echo   dev     - Infra + servers in Docker, backend + frontend run locally
 echo             (restarts local backend/frontend by default)
+echo   canary  - Pull and run pre-built :canary images from Docker Hub (no build required)
 echo   test    - Run precheck: backend lint + tests, frontend lint + tests
 echo.
 echo Options:
@@ -154,6 +156,8 @@ echo   --help, -h, help     - Show this help message
 echo.
 echo Examples:
 echo   agience                      # Full stack in Docker (default)
+echo   agience canary               # Pull and run canary (latest main build from Docker Hub)
+echo   agience canary -f            # Force restart canary containers
 echo   agience dev                  # Dev mode: infra in Docker, backend+frontend local
 echo   agience dev -f --build       # Dev mode, force restart and rebuild
 echo   agience dev -i               # Dev mode, reinstall dependencies
@@ -194,36 +198,45 @@ if errorlevel 1 (
 )
 echo Docker is running [OK]
 
-REM Check if Node.js is installed (not needed in full mode - frontend runs in Docker)
+REM Check if Node.js is installed (not needed in full/canary mode - frontend runs in Docker)
 if "%MODE%"=="full" (
     echo [2/4] Skipping Node.js check - frontend runs in Docker
 ) else (
-    echo [2/4] Checking Node.js...
-    node --version >nul 2>&1
-    if errorlevel 1 (
-        echo ERROR: Node.js is not installed. Please install Node.js and try again.
-        pause
-        exit /b 1
+    if "%MODE%"=="canary" (
+        echo [2/4] Skipping Node.js check - frontend runs in Docker
+    ) else (
+        echo [2/4] Checking Node.js...
+        node --version >nul 2>&1
+        if errorlevel 1 (
+            echo ERROR: Node.js is not installed. Please install Node.js and try again.
+            pause
+            exit /b 1
+        )
+        echo Node.js is available [OK]
     )
-    echo Node.js is available [OK]
 )
 
-REM Check if Python is installed (not needed in full mode - backend runs in Docker)
+REM Check if Python is installed (not needed in full/canary mode - backend runs in Docker)
 if "%MODE%"=="full" (
     echo [3/4] Skipping Python check - backend runs in Docker
 ) else (
-    echo [3/4] Checking Python...
-    python --version >nul 2>&1
-    if errorlevel 1 (
-        echo ERROR: Python is not installed. Please install Python and try again.
-        pause
-        exit /b 1
+    if "%MODE%"=="canary" (
+        echo [3/4] Skipping Python check - backend runs in Docker
+    ) else (
+        echo [3/4] Checking Python...
+        python --version >nul 2>&1
+        if errorlevel 1 (
+            echo ERROR: Python is not installed. Please install Python and try again.
+            pause
+            exit /b 1
+        )
+        echo Python is available [OK]
     )
-    echo Python is available [OK]
 )
 
 REM Handle Docker services based on mode
 if "%MODE%"=="full" goto docker_full
+if "%MODE%"=="canary" goto docker_canary
 goto docker_dev
 
 :docker_full
@@ -250,6 +263,35 @@ if errorlevel 1 (
 ) else (
     echo Docker services already running [OK]
     echo Use --force-docker to rebuild and restart
+    set CONTAINERS_JUST_STARTED=false
+)
+goto docker_done
+
+:docker_canary
+echo [4/4] Managing Docker services (canary mode - pulling registry images)...
+set "VERSION=canary"
+set "SERVERS_IMAGE=agience/agience-servers:canary"
+set "STREAM_IMAGE=agience/agience-stream:canary"
+if "%FORCE_DOCKER%"=="true" (
+    echo Restarting all canary containers...
+    docker compose --project-directory . -f docker/docker-compose.yml -f docker/docker-compose.servers.yml down
+    docker compose --project-directory . -f docker/docker-compose.yml -f docker/docker-compose.servers.yml up --pull=always -d
+    if errorlevel 1 ( echo ERROR: Failed to start canary services. & pause & exit /b 1 )
+    echo Canary containers restarted [OK]
+    set CONTAINERS_JUST_STARTED=true
+    goto docker_done
+)
+echo Checking if containers are running...
+docker compose --project-directory . -f docker/docker-compose.yml ps graph 2>nul | findstr /i "graph" >nul 2>&1
+if errorlevel 1 (
+    echo Pulling and starting canary services...
+    docker compose --project-directory . -f docker/docker-compose.yml -f docker/docker-compose.servers.yml up --pull=always -d
+    if errorlevel 1 ( echo ERROR: Failed to start canary services. & pause & exit /b 1 )
+    echo Canary services started [OK]
+    set CONTAINERS_JUST_STARTED=true
+) else (
+    echo Canary containers already running [OK]
+    echo Use --force-docker to pull latest and restart
     set CONTAINERS_JUST_STARTED=false
 )
 goto docker_done
@@ -471,6 +513,29 @@ if "%MODE%"=="full" (
     if "%CONTAINERS_JUST_STARTED%"=="true" (
         echo   Opening browser once the frontend is ready...
         powershell -NoProfile -Command "$deadline = (Get-Date).AddSeconds(120); $opened = $false; while ((Get-Date) -lt $deadline) { try { $r = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:5173 -TimeoutSec 3 -ErrorAction Stop; if ($r.StatusCode -eq 200) { $url = 'http://localhost:5173'; $tokenFile = '.\.data\keys\setup.token'; $needsSetup = $false; $token = ''; if (Test-Path $tokenFile) { try { $status = Invoke-RestMethod -Uri 'http://127.0.0.1:8081/setup/status' -TimeoutSec 5 -ErrorAction Stop; if ($status.needs_setup) { $needsSetup = $true; $token = (Get-Content $tokenFile -Raw).Trim(); $url = \"http://localhost:5173/setup?token=$token\" } } catch {} }; Start-Process $url; if ($needsSetup) { Write-Host ''; Write-Host ('=' * 64) -ForegroundColor Yellow; Write-Host ''; Write-Host '   SETUP REQUIRED - open this URL to get started:' -ForegroundColor Yellow; Write-Host ''; Write-Host \"   $url\" -ForegroundColor Cyan; Write-Host ''; Write-Host \"   Token: $token\" -ForegroundColor Cyan; Write-Host ''; Write-Host ('=' * 64) -ForegroundColor Yellow; Write-Host '' }; $opened = $true; break } } catch {} Start-Sleep -Seconds 2 }; if (-not $opened) { Write-Host '  Browser not opened - visit http://localhost:5173 manually' }"
+    )
+    exit /b 0
+)
+
+if "%MODE%"=="canary" (
+    echo.
+    echo ====================================
+    echo   Canary build running in Docker!
+    echo ====================================
+    echo.
+    echo   Backend:  http://localhost:8081
+    echo   Frontend: http://localhost:5173
+    echo.
+    echo   MCP Servers:  http://localhost:8082
+    echo     /aria/mcp  /sage/mcp    /atlas/mcp  /nexus/mcp
+    echo     /astra/mcp /verso/mcp   /seraph/mcp /ophan/mcp
+    echo     Stream:      rtmp://localhost:1936/live
+    echo.
+    echo   To stop: agience down
+    echo.
+    if "%CONTAINERS_JUST_STARTED%"=="true" (
+        echo   Opening browser once the frontend is ready...
+        powershell -NoProfile -Command "$deadline = (Get-Date).AddSeconds(120); $opened = $false; while ((Get-Date) -lt $deadline) { try { $r = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:5173 -TimeoutSec 3 -ErrorAction Stop; if ($r.StatusCode -eq 200) { $url = 'http://localhost:5173'; $tokenFile = '.\..data\keys\setup.token'; $needsSetup = $false; $token = ''; if (Test-Path $tokenFile) { try { $status = Invoke-RestMethod -Uri 'http://127.0.0.1:8081/setup/status' -TimeoutSec 5 -ErrorAction Stop; if ($status.needs_setup) { $needsSetup = $true; $token = (Get-Content $tokenFile -Raw).Trim(); $url = \"http://localhost:5173/setup?token=$token\" } } catch {} }; Start-Process $url; if ($needsSetup) { Write-Host ''; Write-Host ('=' * 64) -ForegroundColor Yellow; Write-Host ''; Write-Host '   SETUP REQUIRED - open this URL to get started:' -ForegroundColor Yellow; Write-Host ''; Write-Host \"   $url\" -ForegroundColor Cyan; Write-Host ''; Write-Host \"   Token: $token\" -ForegroundColor Cyan; Write-Host ''; Write-Host ('=' * 64) -ForegroundColor Yellow; Write-Host '' }; $opened = $true; break } } catch {} Start-Sleep -Seconds 2 }; if (-not $opened) { Write-Host '  Browser not opened - visit http://localhost:5173 manually' }"
     )
     exit /b 0
 )
