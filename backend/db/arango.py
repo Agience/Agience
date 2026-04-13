@@ -353,6 +353,37 @@ def get_artifact_by_slug(db: StandardDatabase, slug: str) -> Optional[ArtifactEn
         return None
 
 
+def find_artifact_by_slug_in_collection(
+    db: StandardDatabase, collection_id: str, slug: str,
+) -> Optional[ArtifactEntity]:
+    """Find a non-archived artifact by slug within a specific collection.
+
+    Returns the draft-preferred version if multiple exist for the same slug.
+    """
+    try:
+        cursor = db.aql.execute(
+            """
+            FOR a IN @@col
+              FILTER a.collection_id == @cid
+                 AND a.slug == @slug
+                 AND a.state != "archived"
+              SORT a.state == "draft" ? 0 : 1, a.created_time DESC
+              LIMIT 1
+              RETURN a
+            """,
+            bind_vars={"@col": COLLECTION_ARTIFACTS, "cid": collection_id, "slug": slug},
+        )
+        for doc in cursor:
+            return from_arango_doc(doc, ArtifactEntity)
+        return None
+    except Exception as e:
+        logger.error(
+            "find_artifact_by_slug_in_collection(%s, %s) failed: %s",
+            collection_id, slug, e,
+        )
+        return None
+
+
 def get_artifacts_by_creator_id(db: StandardDatabase, creator_id: str) -> List[ArtifactEntity]:
     try:
         cursor = db.aql.execute(

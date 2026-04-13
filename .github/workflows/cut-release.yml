@@ -1,0 +1,51 @@
+name: Cut release branch
+
+on:
+  workflow_dispatch:
+    inputs:
+      minor_version:
+        description: 'Minor version line to cut (X.Y — e.g. 0.3)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  cut-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Validate version format
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ github.event.inputs.minor_version }}"
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+$'; then
+            echo "::error::Version must be X.Y (for example: 0.3)" >&2
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Check branch does not already exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          BRANCH="release/${VERSION}"
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "::error::Branch '$BRANCH' already exists on remote." >&2
+            exit 1
+          fi
+          echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"
+
+      - name: Create release branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout -b "$BRANCH"
+          git push origin "$BRANCH"
+          echo "Created and pushed $BRANCH from main@$(git rev-parse --short HEAD)"

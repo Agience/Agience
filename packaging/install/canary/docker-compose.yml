@@ -1,26 +1,30 @@
-# Agience Canary — standalone local install (localhost ports, no build required)
+# Agience Canary — local install (home.agience.ai → 127.0.0.1)
 #
-# Pulls the latest canary images from Docker Hub on every start.
+# Pulls :canary images built from every push to main.
+# These builds may be unstable. Use for testing and early feedback.
+#
+# Self-contained — no .env file, no external config files required.
 # The init container generates all credentials on first boot.
-# Platform settings are configured through the setup wizard in the browser.
 #
-# Install:   curl -fsSL https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/canary/install.sh | sh
-#            irm  https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/canary/install.ps1 | iex
-# Start:     docker compose up -d
-# Open:      http://localhost:5173
-# Update:    docker compose pull && docker compose up -d
+# Install:   curl -fsSL https://get.agience.ai/canary/install.sh | sh
+# Start:     agience-canary up
+# Open:      https://home.agience.ai
+# Update:    agience-canary update
 #
-# Optional: add OPENAI_API_KEY=sk-... to ~/.agience/.env to enable semantic search from first boot.
+# Only one Agience stack (home or canary) can run at a time — both use
+# ports 80/443 at home.agience.ai. Run `agience down` or `agience-canary down`
+# before switching.
+
+name: agience-canary
 
 services:
 
   # ── Init — generates all key material on first boot ──────────────────
-  # Idempotent: skips if keys already exist.
+  # Idempotent: skips if .data/.initialized exists.
 
   init:
-    image: agience/agience-init:canary
-    pull_policy: always
-    container_name: init
+    image: ${REGISTRY:-agience}/agience-init:${VERSION:-canary}
+    container_name: canary-init
     volumes:
       - ./.data:/data
 
@@ -28,7 +32,7 @@ services:
 
   graph:
     image: arangodb:3.11
-    container_name: graph
+    container_name: canary-graph
     restart: unless-stopped
     environment:
       - ARANGO_NO_AUTH=0
@@ -40,16 +44,43 @@ services:
     depends_on:
       init:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "(command -v wget >/dev/null && wget -qO- http://127.0.0.1:8529/_admin/server/availability >/dev/null) || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  sql:
+    image: postgres:15
+    container_name: canary-sql
+    restart: unless-stopped
+    environment:
+      PGPORT: 5432
+      POSTGRES_USER: agience
+      POSTGRES_PASSWORD_FILE: /run/keys/postgres.pass
+      POSTGRES_DB: agience
+    volumes:
+      - ./.data/keys:/run/keys:ro
+      - ./.data/postgresdb:/var/lib/postgresql/data
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d agience -U agience"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
 
   search:
     image: opensearchproject/opensearch:latest
-    container_name: search
+    container_name: canary-search
     restart: unless-stopped
-    user: "1000:1000"
     environment:
       - cluster.name=agience-search
       - discovery.type=single-node
-      - OPENSEARCH_JAVA_OPTS=-Xms256m -Xmx256m
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
       - OPENSEARCH_PERFORMANCE_ANALYZER_ENABLED=false
       - DISABLE_INSTALL_DEMO_CONFIG=false
       - plugins.security.disabled=false
@@ -63,10 +94,19 @@ services:
     depends_on:
       init:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL",
+            "curl -sk -u \"admin:$(cat /run/keys/opensearch.pass)\" https://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=2s >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 120s
+
+  # ── Content storage (MinIO) ──────────────────────────────────────────
 
   content:
     image: minio/minio:latest
-    container_name: content
+    container_name: canary-content
     restart: unless-stopped
     environment:
       - MINIO_ROOT_USER=agience
@@ -77,38 +117,50 @@ services:
     depends_on:
       init:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
 
   # ── Platform services ────────────────────────────────────────────────
 
   backend:
-    image: agience/agience-backend:canary
+    image: ${REGISTRY:-agience}/agience-backend:${VERSION:-canary}
     pull_policy: always
-    container_name: backend
+    container_name: canary-backend
     restart: unless-stopped
     environment:
       - BUILD_INFO_PATH=/app/build_info.json
+      - POSTGRES_DB_HOST=sql
       - ARANGO_HOST=graph
       - OPENSEARCH_HOST=search
       - AGIENCE_SERVER_HOST_URI=http://servers:8082
       - MINIO_ROOT_USER=agience
       - KEYS_DIR=/app/.data/keys
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
     volumes:
       - ./.data/keys:/app/.data/keys:ro
-    ports:
-      - "8081:8081"
     depends_on:
       content:
-        condition: service_started
+        condition: service_healthy
+      sql:
+        condition: service_healthy
       graph:
-        condition: service_started
+        condition: service_healthy
       search:
-        condition: service_started
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/version', timeout=2).read()\" >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
 
   servers:
-    image: agience/agience-servers:canary
+    image: ${REGISTRY:-agience}/agience-servers:${VERSION:-canary}
     pull_policy: always
-    container_name: servers
+    container_name: canary-servers
     restart: unless-stopped
     environment:
       - AGIENCE_API_URI=http://backend:8081
@@ -116,19 +168,14 @@ services:
       - STREAM_BASE_URL=http://stream:1985/live
       - STREAM_INGEST_URL=rtmp://localhost:1936/live
     volumes:
-      - ./.data/nexus:/workspace
       - ./.data/stream:/var/stream
-      - ./.data/keys:/run/secrets/keys:ro
-    ports:
-      - "8082:8082"
     depends_on:
-      backend:
-        condition: service_healthy
+      backend: { condition: service_healthy }
 
   stream:
-    image: agience/agience-stream:canary
+    image: ${REGISTRY:-agience}/agience-stream:${VERSION:-canary}
     pull_policy: always
-    container_name: stream
+    container_name: canary-stream
     restart: unless-stopped
     environment:
       - BACKEND_URI=http://servers:8082/astra
@@ -136,17 +183,34 @@ services:
       - ./.data/stream:/var/stream
     ports:
       - "1936:1936"
-      - "1985:1985"
 
   frontend:
-    image: agience/agience-frontend:canary
+    image: ${REGISTRY:-agience}/agience-frontend:${VERSION:-canary}
     pull_policy: always
-    container_name: frontend
+    container_name: canary-frontend
     restart: unless-stopped
-    environment:
-      - VITE_BACKEND_URI=http://localhost:8081
+
+  # ── Router — Caddy with TLS cert fetched from CDN at startup ─────────
+
+  caddy:
+    image: ghcr.io/agience/agience-home:latest
+    pull_policy: always
+    container_name: canary-caddy
+    restart: unless-stopped
     ports:
-      - "5173:80"
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./.data/keys:/run/keys
     depends_on:
+      init:
+        condition: service_completed_successfully
+      frontend:
+        condition: service_started
       backend:
-        condition: service_healthy
+        condition: service_started
+      content:
+        condition: service_started
+      stream:
+        condition: service_started

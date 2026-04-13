@@ -11,14 +11,18 @@
 #   agience down    stop
 # ──────────────────────────────────────────────────────────────────────
 #Requires -Version 5.1
+[CmdletBinding()]
+param(
+    [string]$DataPath = ''
+)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # ── Configuration ────────────────────────────────────────────────────
 
-$InstallDir = Join-Path $env:USERPROFILE '.agience'
-$BinDir     = Join-Path $InstallDir 'bin'
-$ComposeUrl = 'https://get.agience.ai/home/docker-compose.yml'
+$InstallDir = if ($DataPath) { $DataPath } else { Join-Path $env:USERPROFILE '.agience' }
+$BinDir     = Join-Path $env:USERPROFILE '.agience\bin'
+$ComposeUrl = 'https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/home/docker-compose.yml'
 
 # ── Helpers ──────────────────────────────────────────────────────────
 

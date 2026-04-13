@@ -38,6 +38,9 @@ Tool Discovery:
 Task Tracking:
   todo_list            -- Manage a task list within a workspace.
 
+Memory (Workspace Bindings):
+  memory            -- Read/write named artifacts in a workspace's bound collection.
+
 Communication & Routing:
   ask               -- Ask a question grounded in the knowledge base.
 """
@@ -666,15 +669,28 @@ def discover_tools(
     Optionally filter by keyword query, scope to a workspace, or
     list tools on a specific server.
 
+    When the workspace has a ``tools`` binding, discovery is scoped to
+    MCP servers in the bound collection only.  When no binding exists,
+    all accessible servers are returned.
+
     Use this to understand what capabilities are available before
     calling tools by name.
     """
-    from services import mcp_service
+    from services import mcp_service, workspace_service
 
     user_id = _user_id()
     arango = _get_arango()
     try:
+        # If workspace has a tools binding, scope to that collection.
+        tools_collection_id = None
         if workspace_id:
+            tools_collection_id = workspace_service.resolve_binding(
+                arango, user_id, workspace_id, "tools",
+            )
+
+        if tools_collection_id:
+            servers = mcp_service.list_servers_from_collection(arango, tools_collection_id)
+        elif workspace_id:
             servers = mcp_service.list_servers_for_workspace(arango, user_id, workspace_id)
         else:
             servers = mcp_service.list_all_servers_for_user(arango, user_id)
@@ -839,6 +855,166 @@ def relay_status() -> dict:
 
 
 # ===================================================================
+# TOOLS  -- Memory (Workspace Bindings)
+# ===================================================================
+
+@mcp.tool()
+def memory(
+    workspace_id: str,
+    command: Literal["read", "write", "list", "search", "delete"],
+    key: Optional[str] = None,
+    content: Optional[str] = None,
+    context: Optional[Dict[str, Any]] = None,
+    query: Optional[str] = None,
+    scope: str = "memory",
+) -> dict:
+    """Read and write named artifacts in a workspace's bound memory collection.
+
+    The workspace must have a binding for the given scope (default "memory")
+    pointing to a collection.  Set bindings in workspace context:
+      {"bindings": {"memory": {"collection_id": "<collection-id>"}}}
+
+    Commands:
+      read    -- Return the content of the artifact with the given key (slug).
+      write   -- Create or update an artifact by key. Provide content and
+                 optional context metadata.
+      list    -- Return all artifacts in the bound collection.
+      search  -- Search within the bound collection (provide query).
+      delete  -- Archive the artifact with the given key.
+    """
+    from services import workspace_service
+    import db.arango as arango_db
+
+    user_id = _user_id()
+    db = _get_arango()
+    try:
+        # Resolve binding
+        collection_id = workspace_service.resolve_binding(
+            db, user_id, workspace_id, scope,
+        )
+        if not collection_id:
+            return {"error": f"No '{scope}' binding in workspace {workspace_id}"}
+
+        # -- read --
+        if command == "read":
+            if not key:
+                return {"error": "Provide 'key' for read command."}
+            artifact = arango_db.find_artifact_by_slug_in_collection(
+                db, collection_id, key,
+            )
+            if not artifact:
+                return {"error": f"No artifact with key '{key}' in bound collection."}
+            return {
+                "key": key,
+                "artifact_id": artifact.id,
+                "content": _resolve_content(artifact),
+                "context": artifact.context,
+            }
+
+        # -- write --
+        if command == "write":
+            if not key:
+                return {"error": "Provide 'key' for write command."}
+            existing = arango_db.find_artifact_by_slug_in_collection(
+                db, collection_id, key,
+            )
+            ctx = json.dumps(context or {})
+            if existing:
+                updated = workspace_service.update_artifact(
+                    db, user_id, collection_id, existing.id,
+                    content=content,
+                    context=ctx if context else None,
+                )
+                return {
+                    "action": "updated",
+                    "key": key,
+                    "artifact_id": updated.id,
+                }
+            else:
+                created = workspace_service.create_workspace_artifact(
+                    db, user_id, collection_id,
+                    context=ctx,
+                    content=content or "",
+                    slug=key,
+                )
+                return {
+                    "action": "created",
+                    "key": key,
+                    "artifact_id": created.id,
+                }
+
+        # -- list --
+        if command == "list":
+            rows = arango_db.list_collection_artifacts(db, collection_id)
+            items = []
+            for r in rows:
+                items.append({
+                    "id": r.get("id"),
+                    "slug": r.get("slug"),
+                    "state": r.get("state"),
+                    "content_type": r.get("content_type"),
+                    "created_time": r.get("created_time"),
+                })
+            return {
+                "collection_id": collection_id,
+                "count": len(items),
+                "items": items,
+            }
+
+        # -- search --
+        if command == "search":
+            if not query:
+                return {"error": "Provide 'query' for search command."}
+            from search.accessor.search_accessor import SearchAccessor, SearchQuery
+
+            accessor = SearchAccessor()
+            result = accessor.search(
+                SearchQuery(
+                    query_text=query,
+                    user_id=user_id,
+                    collection_ids=[collection_id],
+                    size=20,
+                )
+            )
+            hits = []
+            for h in getattr(result, "hits", []) or []:
+                hits.append({
+                    "id": getattr(h, "doc_id", None),
+                    "title": getattr(h, "title", None),
+                    "score": getattr(h, "score", None),
+                    "content": getattr(h, "content", None),
+                })
+            return {
+                "collection_id": collection_id,
+                "total": getattr(result, "total", 0),
+                "hits": hits,
+            }
+
+        # -- delete --
+        if command == "delete":
+            if not key:
+                return {"error": "Provide 'key' for delete command."}
+            artifact = arango_db.find_artifact_by_slug_in_collection(
+                db, collection_id, key,
+            )
+            if not artifact:
+                return {"error": f"No artifact with key '{key}' in bound collection."}
+            workspace_service.update_artifact(
+                db, user_id, collection_id, artifact.id,
+                state="archived",
+            )
+            return {
+                "action": "archived",
+                "key": key,
+                "artifact_id": artifact.id,
+            }
+
+        return {"error": f"Unknown command: {command}"}
+    finally:
+        db.close()
+
+
+# ===================================================================
 # MCP Resources
 # ===================================================================
 
@@ -959,6 +1135,7 @@ TOOL_REGISTRY: Dict[str, Any] = {
     "ask": ask,
     "discover_tools": discover_tools,
     "todo_list": todo_list,
+    "memory": memory,
 }
 
 

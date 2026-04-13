@@ -1,8 +1,9 @@
 {
   "version": "2.0.0",
   "tasks": [
+    // ── Public repo publishing ────────────────────────────────────────
     {
-      "label": "Agience: Publish public main (first commit)",
+      "label": "Agience: Publish First",
       "type": "shell",
       "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .scripts\\publish_public.ps1 -Message '${input:message}' -CreateOrphan",
       "options": {
@@ -11,7 +12,7 @@
       "problemMatcher": []
     },
     {
-      "label": "Agience: Publish public main",
+      "label": "Agience: Publish Canary",
       "type": "shell",
       "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .scripts\\publish_public.ps1 -Message '${input:message}'",
       "options": {
@@ -19,10 +20,49 @@
       },
       "problemMatcher": []
     },
+    // ── Release management ────────────────────────────────────────────
     {
-      "label": "Agience: Publish public release",
+      "label": "Agience: Publish RC",
       "type": "shell",
-      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .scripts\\publish_public.ps1 -Version '${input:version}' -ReleaseBranch",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .scripts\\cut-release.ps1 -Version '${input:minor_version}'",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Agience: Publish Stable",
+      "type": "shell",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .scripts\\tag-stable.ps1 -Version '${input:patch_version}'",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    // ── Hotfix ────────────────────────────────────────────────────────
+    {
+      "label": "Agience: Publish Hotfix",
+      "type": "shell",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .scripts\\hotfix.ps1 -Version '${input:hotfix_version}'",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Agience: Finish Hotfix",
+      "type": "shell",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .scripts\\hotfix.ps1 -Version '${input:hotfix_version}' -Finish -ForwardPort",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    // ── Hosted deploy ─────────────────────────────────────────────────
+    {
+      "label": "Agience: Publish Hosted",
+      "type": "shell",
+      "command": "gh workflow run deploy-suite.yml --repo Agience/agience-core-private",
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -31,16 +71,28 @@
   ],
   "inputs": [
     {
-      "id": "version",
-      "type": "promptString",
-      "description": "Semantic version for the public publish (e.g. 0.2.0)",
-      "default": "release"
-    },
-    {
       "id": "message",
       "type": "promptString",
       "description": "Commit message for the public publish",
       "default": "publish"
+    },
+    {
+      "id": "minor_version",
+      "type": "promptString",
+      "description": "Minor version line to cut (X.Y — e.g. 0.3)",
+      "default": ""
+    },
+    {
+      "id": "patch_version",
+      "type": "promptString",
+      "description": "Patch version to tag as stable (X.Y.Z — e.g. 0.3.0)",
+      "default": ""
+    },
+    {
+      "id": "hotfix_version",
+      "type": "promptString",
+      "description": "Hotfix version (X.Y.Z — e.g. 0.2.1). Branch release/X.Y must exist.",
+      "default": ""
     }
   ]
 }

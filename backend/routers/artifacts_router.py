@@ -496,6 +496,7 @@ async def update_artifact(
             artifact_id,
             name=body.name,
             description=body.description,
+            context=body.context,
         )
         result = updated.to_dict()
         result["_container_type"] = "workspace" if updated.content_type == WORKSPACE_CONTENT_TYPE else "collection"

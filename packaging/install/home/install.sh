@@ -19,7 +19,7 @@ set -euo pipefail
 INSTALL_DIR="${HOME}/.agience"
 BIN_DIR="${HOME}/.local/bin"
 COMPOSE_FILE="docker-compose.yml"
-COMPOSE_URL="https://get.agience.ai/home/docker-compose.yml"
+COMPOSE_URL="https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/home/docker-compose.yml"
 DOCKER_INSTALL_URL="https://get.docker.com"
 DOCKER_DESKTOP_MAC_URL="https://www.docker.com/products/docker-desktop/"
 

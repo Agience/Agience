@@ -1,0 +1,73 @@
+name: Tag stable release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Patch version to tag (X.Y.Z — e.g. 0.3.1)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  tag-stable:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate version format
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ github.event.inputs.version }}"
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Version must be X.Y.Z (for example: 0.3.1)" >&2
+            exit 1
+          fi
+          MINOR="${VERSION%.*}"
+          echo "VERSION=$VERSION"         >> "$GITHUB_ENV"
+          echo "MINOR=$MINOR"             >> "$GITHUB_ENV"
+          echo "TAG=v${VERSION}"          >> "$GITHUB_ENV"
+          echo "BRANCH=release/${MINOR}"  >> "$GITHUB_ENV"
+
+      - name: Checkout release branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BRANCH }}
+          fetch-depth: 0
+
+      - name: Validate build_info.json matches version
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_VERSION=$(python3 -c "
+          import json, pathlib
+          data = json.loads(pathlib.Path('build_info.json').read_text())
+          v = str(data.get('version', '')).strip()
+          if not v: raise SystemExit('build_info.json must contain a non-empty version string')
+          print(v)
+          ")
+          if [ "$BUILD_VERSION" != "$VERSION" ]; then
+            echo "::error::build_info.json version '$BUILD_VERSION' does not match input version '$VERSION'. Update build_info.json on $BRANCH first." >&2
+            exit 1
+          fi
+          echo "build_info.json verified: $BUILD_VERSION"
+
+      - name: Check tag does not already exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git ls-remote --tags origin "$TAG" | grep -q .; then
+            echo "::error::Tag '$TAG' already exists on remote." >&2
+            exit 1
+          fi
+
+      - name: Create and push tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "$TAG" -m "Agience $TAG"
+          git push origin "$TAG"
+          echo "Tagged $TAG on $BRANCH @ $(git rev-parse --short HEAD)"
+          echo "Triggers: build-and-push-ghcr.yml (:latest :${MINOR} :${VERSION}) and release.yml (GitHub Release)"

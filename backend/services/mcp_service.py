@@ -337,6 +337,51 @@ def _collect_mcp_servers_from_collections(
     return servers
 
 
+def list_servers_from_collection(
+    db: StandardDatabase,
+    collection_id: str,
+) -> List[MCPServerInfo]:
+    """Return live info for MCP servers in a specific collection.
+
+    Reads all artifacts from *collection_id*, filters for those whose
+    content type declares an ``mcp_server_config`` handler, parses their
+    configs, and fetches live server info.  Used by ``discover_tools``
+    when a workspace has a ``tools`` binding.
+    """
+    from entities.artifact import Artifact
+
+    servers: List[MCPServerInfo] = []
+    try:
+        artifacts = [
+            Artifact.from_dict(r)
+            for r in _db_list_collection_artifacts(db, collection_id)
+        ]
+    except Exception:
+        logger.exception("list_servers_from_collection(%s): artifact load failed", collection_id)
+        return servers
+
+    for artifact in artifacts:
+        content_type = _extract_content_type(artifact)
+        if not content_type:
+            continue
+        from services.types_service import resolve_capability_target
+        if not resolve_capability_target(content_type, "mcp_server_config"):
+            continue
+
+        art_id = artifact.root_id or artifact.id
+        config = _parse_mcp_server_artifact(artifact)
+        if not config:
+            servers.append(MCPServerInfo(server=art_id, status="error", message="Invalid server config"))
+            continue
+        try:
+            info = fetch_server_info(config)
+            servers.append(info)
+        except Exception as e:
+            servers.append(MCPServerInfo(server=art_id, status="error", message=str(e)))
+
+    return servers
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------

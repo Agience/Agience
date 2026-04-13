@@ -228,6 +228,7 @@ def update_workspace(
     workspace_id: str,
     name: Optional[str],
     description: Optional[str],
+    context: Optional[str] = None,
 ) -> CollectionEntity:
     ws = get_workspace(db, user_id, workspace_id)
     changed = False
@@ -243,6 +244,11 @@ def update_workspace(
 
         from services.collection_service import ensure_collection_descriptor
         ensure_collection_descriptor(db, ws)
+
+    if context is not None:
+        parsed = _safe_parse_context(context) if isinstance(context, str) else context
+        update_workspace_context(db, user_id, workspace_id, parsed)
+        ws = get_workspace(db, user_id, workspace_id)
 
     return ws
 
@@ -312,6 +318,122 @@ def apply_workspace_card_actions(
                 current["collections"].append(item)
                 coll_by_id[cid] = item
     return update_workspace_context(db, user_id, workspace_id, current)
+
+
+# ---------------------------------------------------------------------------
+# Workspace Bindings — Cascade Resolution
+# ---------------------------------------------------------------------------
+
+def _extract_bindings(context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Read the ``bindings`` dict from a parsed context, returning ``{}`` if absent or invalid."""
+    if not context or not isinstance(context, dict):
+        return {}
+    bindings = context.get("bindings")
+    if not isinstance(bindings, dict):
+        return {}
+    return bindings
+
+
+def _user_can_read_collection(
+    db: StandardDatabase, user_id: str, collection_id: str
+) -> bool:
+    """Return ``True`` if *user_id* has at least read access to *collection_id*."""
+    col = arango.get_collection_by_id(db, collection_id)
+    if not col:
+        return False
+    if getattr(col, "created_by", None) == user_id:
+        return True
+    grants = arango.get_active_grants_for_principal_resource(
+        db, grantee_id=user_id, resource_type="collection", resource_id=collection_id,
+    )
+    return any(getattr(g, "can_read", False) for g in grants)
+
+
+def _resolve_binding_from(
+    bindings: Dict[str, Any], role: str,
+) -> Optional[str]:
+    """Extract ``collection_id`` for *role* from a bindings dict, or ``None``."""
+    entry = bindings.get(role)
+    if isinstance(entry, dict):
+        cid = entry.get("collection_id")
+        if isinstance(cid, str) and cid:
+            return cid
+    return None
+
+
+def resolve_binding(
+    db: StandardDatabase,
+    user_id: str,
+    workspace_id: str,
+    role: str,
+    *,
+    transform_context: Optional[Dict[str, Any]] = None,
+    step_context: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Resolve a binding role through the cascade: step → transform → workspace.
+
+    Returns the ``collection_id`` of the first accessible binding found, or
+    ``None`` if the role is unbound at every level.
+    """
+    # 1. Step-level
+    cid = _resolve_binding_from(_extract_bindings(step_context), role)
+    if cid and _user_can_read_collection(db, user_id, cid):
+        return cid
+
+    # 2. Transform-level
+    cid = _resolve_binding_from(_extract_bindings(transform_context), role)
+    if cid and _user_can_read_collection(db, user_id, cid):
+        return cid
+
+    # 3. Workspace-level
+    ws_context = get_workspace_context(db, user_id, workspace_id)
+    cid = _resolve_binding_from(_extract_bindings(ws_context), role)
+    if cid and _user_can_read_collection(db, user_id, cid):
+        return cid
+
+    # 4. Platform defaults — not implemented in Phase 1
+    return None
+
+
+def resolve_all_bindings(
+    db: StandardDatabase,
+    user_id: str,
+    workspace_id: str,
+    *,
+    transform_context: Optional[Dict[str, Any]] = None,
+    step_context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    """Resolve all binding roles through the cascade.
+
+    Returns ``{role: collection_id}`` for every role that resolves to an
+    accessible collection.  Roles where the user lacks access are omitted.
+    """
+    ws_context = get_workspace_context(db, user_id, workspace_id)
+
+    # Collect all role names across cascade levels.
+    all_roles: set[str] = set()
+    all_roles.update(_extract_bindings(ws_context).keys())
+    all_roles.update(_extract_bindings(transform_context).keys())
+    all_roles.update(_extract_bindings(step_context).keys())
+
+    result: Dict[str, str] = {}
+    for role in all_roles:
+        # Inline cascade to avoid re-reading workspace context per role.
+        cid = _resolve_binding_from(_extract_bindings(step_context), role)
+        if cid and _user_can_read_collection(db, user_id, cid):
+            result[role] = cid
+            continue
+
+        cid = _resolve_binding_from(_extract_bindings(transform_context), role)
+        if cid and _user_can_read_collection(db, user_id, cid):
+            result[role] = cid
+            continue
+
+        cid = _resolve_binding_from(_extract_bindings(ws_context), role)
+        if cid and _user_can_read_collection(db, user_id, cid):
+            result[role] = cid
+
+    return result
 
 
 # ---------------------------------------------------------------------------

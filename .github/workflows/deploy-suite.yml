@@ -1,0 +1,47 @@
+name: Deploy suite
+
+# Deploys my.agience.ai automatically after a successful stable image build,
+# or manually from the Actions tab.
+#
+# Trigger chain:
+#   git push vX.Y.Z
+#     → build-and-push-ghcr.yml  (builds + pushes :latest :X.Y :X.Y.Z)
+#       → deploy-suite.yml       (fires on workflow_run: completed + success)
+#         → agience-host-my release.yml  (docker compose pull + up with :latest)
+#
+# Requires:
+#   DEPLOY_TOKEN_MY — a PAT with `workflow` scope for Agience/agience-host-my.
+
+on:
+  workflow_run:
+    workflows: ["Build and push images (GHCR + Docker Hub stable release)"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-my-agience:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger my.agience.ai deploy (latest stable)
+        env:
+          GH_TOKEN: ${{ secrets.DEPLOY_TOKEN_MY }}
+        run: |
+          gh workflow run release.yml \
+            --repo Agience/agience-host-my \
+            --ref release
+          echo "Triggered my.agience.ai deploy (latest stable)"
+
+      - name: Write summary
+        run: |
+          echo "### my.agience.ai deploy triggered" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            echo "Triggered by: successful build on \`${{ github.event.workflow_run.head_branch }}\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Triggered manually" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Check [agience-host-my Actions](https://github.com/Agience/agience-host-my/actions) for deploy status." >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,105 @@
+name: Hotfix merge
+
+# Merges a completed hotfix branch back into its target release branch,
+# then forward-ports the release branch into main.
+#
+# Typical flow:
+#   1. Developer creates hotfix/X.Y.Z from release/X.Y  (local script)
+#   2. Makes fix, pushes hotfix/X.Y.Z
+#   3. CI runs on hotfix/X.Y.Z
+#   4. Runs this workflow to merge back + forward-port
+#   5. Tags vX.Y.Z via tag-stable workflow or local script
+
+on:
+  workflow_dispatch:
+    inputs:
+      hotfix_branch:
+        description: 'Hotfix branch name (e.g. hotfix/0.2.1)'
+        required: true
+      release_branch:
+        description: 'Target release branch (e.g. release/0.2)'
+        required: true
+      forward_port:
+        description: 'Also merge release branch into main after hotfix merge'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  hotfix-merge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          HOTFIX="${{ github.event.inputs.hotfix_branch }}"
+          RELEASE="${{ github.event.inputs.release_branch }}"
+
+          if ! printf '%s' "$HOTFIX" | grep -Eq '^hotfix/[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::hotfix_branch must be hotfix/X.Y.Z (for example: hotfix/0.2.1)" >&2
+            exit 1
+          fi
+          if ! printf '%s' "$RELEASE" | grep -Eq '^release/[0-9]+\.[0-9]+$'; then
+            echo "::error::release_branch must be release/X.Y (for example: release/0.2)" >&2
+            exit 1
+          fi
+
+          # Hotfix minor must match release minor
+          HOTFIX_VERSION="${HOTFIX#hotfix/}"
+          HOTFIX_MINOR="${HOTFIX_VERSION%.*}"
+          RELEASE_MINOR="${RELEASE#release/}"
+          if [ "$HOTFIX_MINOR" != "$RELEASE_MINOR" ]; then
+            echo "::error::Hotfix minor version '$HOTFIX_MINOR' does not match release '$RELEASE_MINOR'" >&2
+            exit 1
+          fi
+
+          echo "HOTFIX=$HOTFIX"   >> "$GITHUB_ENV"
+          echo "RELEASE=$RELEASE" >> "$GITHUB_ENV"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        shell: bash
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge hotfix → release
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout "$RELEASE"
+          git pull origin "$RELEASE"
+          git merge --no-ff "origin/$HOTFIX" -m "Merge $HOTFIX into $RELEASE"
+          git push origin "$RELEASE"
+          echo "Merged $HOTFIX into $RELEASE"
+
+      - name: Forward-port release → main
+        if: ${{ github.event.inputs.forward_port == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout main
+          git pull origin main
+          git merge --no-ff "$RELEASE" -m "Forward-port $RELEASE into main (post $HOTFIX)"
+          git push origin main
+          echo "Forward-ported $RELEASE into main"
+
+      - name: Summary
+        shell: bash
+        run: |
+          echo "### Hotfix merge complete" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Merged \`$HOTFIX\` → \`$RELEASE\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ github.event.inputs.forward_port }}" = "true" ]; then
+            echo "- Forward-ported \`$RELEASE\` → \`main\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Next: tag the stable release via **tag-stable** workflow or \`.scripts/tag-stable.ps1\`" >> "$GITHUB_STEP_SUMMARY"

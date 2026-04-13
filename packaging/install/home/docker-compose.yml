@@ -39,6 +39,12 @@ services:
     depends_on:
       init:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "(command -v wget >/dev/null && wget -qO- http://127.0.0.1:8529/_admin/server/availability >/dev/null) || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
 
   sql:
     image: postgres:15
@@ -55,6 +61,12 @@ services:
     depends_on:
       init:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d agience -U agience"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
 
   search:
     image: opensearchproject/opensearch:latest
@@ -77,6 +89,13 @@ services:
     depends_on:
       init:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL",
+            "curl -sk -u \"admin:$(cat /run/keys/opensearch.pass)\" https://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=2s >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 120s
 
   # ── Content storage (MinIO) ──────────────────────────────────────────
 
@@ -93,6 +112,12 @@ services:
     depends_on:
       init:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
 
   # ── Platform services ────────────────────────────────────────────────
 
@@ -113,13 +138,19 @@ services:
       - ./.data/keys:/app/.data/keys:ro
     depends_on:
       content:
-        condition: service_started
+        condition: service_healthy
       sql:
-        condition: service_started
+        condition: service_healthy
       graph:
-        condition: service_started
+        condition: service_healthy
       search:
-        condition: service_started
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/version', timeout=2).read()\" >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
 
   servers:
     image: ${REGISTRY:-agience}/agience-servers:${VERSION:-latest}
@@ -134,7 +165,7 @@ services:
     volumes:
       - ./.data/stream:/var/stream
     depends_on:
-      backend: { condition: service_started }
+      backend: { condition: service_healthy }
 
   stream:
     image: ${REGISTRY:-agience}/agience-stream:${VERSION:-latest}
