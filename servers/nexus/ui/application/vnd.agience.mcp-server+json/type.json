@@ -117,6 +117,49 @@
     "is_container": false,
     "creatable": true,
     "viewer": "mcp-server",
-    "description": "External MCP server \u2014 add one to a workspace to expose its tools, resources, and prompts as artifacts."
+    "description": "External MCP server — add one to a workspace to expose its tools, resources, and prompts as artifacts.",
+    "fields": [
+      {
+        "key": "title",
+        "label": "Display name",
+        "type": "text",
+        "placeholder": "e.g. My MCP Server",
+        "required": true,
+        "editable": true
+      },
+      {
+        "key": "transport.type",
+        "label": "Transport",
+        "type": "select",
+        "options": ["http", "stdio"],
+        "required": true,
+        "editable": true
+      },
+      {
+        "key": "transport.well_known",
+        "label": "Server URL",
+        "type": "text",
+        "placeholder": "e.g. https://myserver.example.com/.well-known/mcp.json",
+        "required": false,
+        "editable": true,
+        "hint": "/.well-known/mcp.json URL or direct /mcp endpoint (HTTP transport only)"
+      },
+      {
+        "key": "transport.command",
+        "label": "Command",
+        "type": "text",
+        "placeholder": "e.g. /usr/local/bin/my-mcp-server",
+        "required": false,
+        "editable": true,
+        "hint": "Executable path (stdio transport only)"
+      },
+      {
+        "key": "notes",
+        "label": "Notes",
+        "type": "textarea",
+        "required": false,
+        "editable": true
+      }
+    ]
   }
 }

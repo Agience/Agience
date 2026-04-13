@@ -76,13 +76,6 @@ PLATFORM_AGENT_SLUGS = [
     "nexus", "ophan", "seraph", "verso",
 ]
 
-# Same eight personas exposed as first-party MCP servers. Keep in sync with
-# backend/core/config.py BUILTIN_MCP_SERVER_PATHS keys.
-PLATFORM_SERVER_SLUGS = [
-    "aria", "astra", "atlas", "sage",
-    "nexus", "ophan", "seraph", "verso",
-]
-
 PLATFORM_LLM_CONNECTION_SLUGS = [
     "anthropic-sonnet",
     "anthropic-opus",

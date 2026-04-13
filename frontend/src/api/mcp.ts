@@ -52,6 +52,7 @@ export interface MCPPrompt {
 
 export interface MCPServerInfo {
   server: string;
+  name?: string;
   tools: MCPTool[];
   resources: MCPResource[];
   prompts?: MCPPrompt[];
@@ -82,8 +83,8 @@ export async function listAllMCPServers(): Promise<MCPServerInfo[]> {
 /**
  * List MCP servers available to a workspace with their tools and resources.
  *
- * Server IDs can be built-in IDs such as "agience-core" or "astra", or the
- * artifact ID of an mcp-server+json artifact.
+ * Server IDs can be built-in IDs such as "agience-core" or artifact UUIDs
+ * of mcp-server+json artifacts.
  */
 export async function listWorkspaceMCPServers(workspaceId: string): Promise<MCPServerInfo[]> {
   const response = await api.get<MCPServerInfo[]>(`/mcp/workspaces/${workspaceId}/servers`);
@@ -176,7 +177,8 @@ export async function proxyToolCall(
 ): Promise<{ content: Array<{ type: string; text?: string }> }> {
   const response = await api.post(
     `/artifacts/${encodeURIComponent(serverArtifactId)}/invoke`,
-    { name: toolName, arguments: args, workspace_id: workspaceId }
+    { name: toolName, arguments: args, workspace_id: workspaceId },
+    { timeout: 0 },  // no timeout — invoke runs unbounded LLM + tool chains; deltas stream via WebSocket
   );
   return response.data as { content: Array<{ type: string; text?: string }> };
 }

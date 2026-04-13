@@ -24,6 +24,7 @@ class MCPResource(BaseModel):
 
 class MCPServerInfo(BaseModel):
     server: str
+    name: str | None = None
     tools: List[MCPTool] = Field(default_factory=list)
     resources: List[MCPResource] = Field(default_factory=list)
     prompts: List[dict] = Field(default_factory=list)
@@ -34,6 +35,7 @@ class MCPServerInfo(BaseModel):
     def from_core(cls, core: _MCPServerInfo) -> "MCPServerInfo":
         return cls(
             server=core.server,
+            name=core.name,
             tools=[MCPTool(**t.model_dump()) for t in core.tools],
             resources=[MCPResource(**r.model_dump()) for r in core.resources],
             prompts=[p.model_dump() if isinstance(p, _MCPPrompt) else dict(p) for p in (core.prompts or [])],

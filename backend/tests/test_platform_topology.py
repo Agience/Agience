@@ -22,9 +22,9 @@ from services.bootstrap_types import (
     LLM_CONNECTION_SLUG_PREFIX,
     PLATFORM_AGENT_SLUGS,
     PLATFORM_LLM_CONNECTION_SLUGS,
-    PLATFORM_SERVER_SLUGS,
     SERVER_ARTIFACT_SLUG_PREFIX,
 )
+from services import server_registry
 
 
 @pytest.fixture
@@ -112,7 +112,7 @@ class TestPreResolvePlatformIds:
         for llm_slug in PLATFORM_LLM_CONNECTION_SLUGS:
             assert pt.get_id_optional(f"{LLM_CONNECTION_SLUG_PREFIX}{llm_slug}") is not None
 
-        for srv_slug in PLATFORM_SERVER_SLUGS:
+        for srv_slug in server_registry.all_names():
             assert pt.get_id_optional(f"{SERVER_ARTIFACT_SLUG_PREFIX}{srv_slug}") is not None
 
         # New IDs were persisted.

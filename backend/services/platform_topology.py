@@ -29,7 +29,6 @@ from services.bootstrap_types import (
     SERVER_ARTIFACT_SLUG_PREFIX,
     PLATFORM_AGENT_SLUGS,
     PLATFORM_LLM_CONNECTION_SLUGS,
-    PLATFORM_SERVER_SLUGS,
 )
 
 logger = logging.getLogger(__name__)
@@ -84,12 +83,14 @@ def clear_registry() -> None:
 
 def _all_platform_slugs() -> list[str]:
     """Return every slug that needs an ID mapping."""
+    from services import server_registry
+
     slugs: list[str] = []
     slugs.extend(ALL_PLATFORM_COLLECTION_SLUGS)
     slugs.extend([AUTHORITY_ARTIFACT_SLUG, HOST_ARTIFACT_SLUG, AGENCY_ARTIFACT_SLUG])
     slugs.extend(f"{AGENT_ARTIFACT_SLUG_PREFIX}{s}" for s in PLATFORM_AGENT_SLUGS)
     slugs.extend(f"{LLM_CONNECTION_SLUG_PREFIX}{s}" for s in PLATFORM_LLM_CONNECTION_SLUGS)
-    slugs.extend(f"{SERVER_ARTIFACT_SLUG_PREFIX}{s}" for s in PLATFORM_SERVER_SLUGS)
+    slugs.extend(f"{SERVER_ARTIFACT_SLUG_PREFIX}{name}" for name in server_registry.all_names())
     return slugs
 
 

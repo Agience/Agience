@@ -32,7 +32,7 @@ TRANSFORMS: list[dict] = [
     {
         "slug": "ingest-dedup",
         "context": {
-            "mime": "application/vnd.agience.transform+json",
+            "content_type": "application/vnd.agience.transform+json",
             "title": "Deduplication Check",
             "description": (
                 "Computes a SHA-256 hash of the artifact content and checks the workspace "
@@ -66,7 +66,7 @@ TRANSFORMS: list[dict] = [
     {
         "slug": "ingest-pdf-extract",
         "context": {
-            "mime": "application/vnd.agience.transform+json",
+            "content_type": "application/vnd.agience.transform+json",
             "title": "PDF Text Extraction",
             "description": (
                 "Extracts text from a PDF artifact using Astra's built-in PyPDF extractor "
@@ -103,7 +103,7 @@ TRANSFORMS: list[dict] = [
     {
         "slug": "ingest-extract-metadata",
         "context": {
-            "mime": "application/vnd.agience.transform+json",
+            "content_type": "application/vnd.agience.transform+json",
             "title": "Document Metadata Extraction",
             "description": (
                 "Uses an LLM to extract structured bibliographic, classification, and "
@@ -151,7 +151,7 @@ TRANSFORMS: list[dict] = [
     {
         "slug": "ingest-apply-metadata",
         "context": {
-            "mime": "application/vnd.agience.transform+json",
+            "content_type": "application/vnd.agience.transform+json",
             "title": "Apply Extracted Metadata",
             "description": (
                 "Writes LLM-extracted metadata JSON into an artifact's context.metadata field. "
@@ -177,6 +177,49 @@ TRANSFORMS: list[dict] = [
             },
             "output": {
                 "description": 'JSON: {"status": "ok", "artifact_id": str, "fields_applied": [...]}',
+            },
+        },
+    },
+
+    # ------------------------------------------------------------------
+    # Orchestrator — Full Ingest Pipeline (single invocation)
+    # Chains: dedup → pdf-extract → metadata-extract → metadata-apply
+    # ------------------------------------------------------------------
+    {
+        "slug": "ingest-pipeline",
+        "context": {
+            "content_type": "application/vnd.agience.transform+json",
+            "title": "Ingest Pipeline",
+            "description": (
+                "Run the full document ingestion pipeline on a PDF artifact in one step: "
+                "deduplication → text extraction → LLM metadata extraction → apply metadata. "
+                "Drop a PDF onto this transform to ingest it."
+            ),
+            "transform": {"kind": "ingest", "subtype": "pipeline"},
+            "run": {
+                "type": "mcp-tool",
+                "server": "astra",
+                "tool": "ingest_pipeline",
+                "input_mapping": {
+                    "workspace_id": "$.workspace_id",
+                    "artifact_id": "$.artifacts[0]",
+                },
+            },
+            "input": {
+                "description": "A PDF artifact in the workspace to ingest.",
+                "artifacts": {"min": 1, "max": 1},
+            },
+            "output": {
+                "description": (
+                    "JSON: {status, artifact_id, text_artifact_id, pages, content_hash, "
+                    "metadata: {published_by, published_date, document_type, formality, "
+                    "sector, issues}, steps: [...]}"
+                ),
+            },
+            "drop": {
+                "enabled": True,
+                "label": "Drop PDF to ingest",
+                "accepts": ["application/pdf"],
             },
         },
     },

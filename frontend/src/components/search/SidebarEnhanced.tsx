@@ -608,7 +608,7 @@ export default function SidebarEnhanced({
             }> = [];
 
             Object.entries(mcpServerInfos).forEach(([serverId, serverInfo]) => {
-              const serverName = serverInfo.server || serverId;
+              const serverName = serverInfo.name || serverId;
 
               (serverInfo.resources || []).forEach((resource) => {
                   let resourceId = resource.id || resource.uri || '';
@@ -964,7 +964,7 @@ export default function SidebarEnhanced({
 
               // Add MCP resources (collections and other resources)
               Object.entries(mcpServerInfos).forEach(([serverId, serverInfo]) => {
-                const serverName = serverInfo.server || serverId;
+                const serverName = serverInfo.name || serverId;
 
                 (serverInfo.resources || []).forEach((resource) => {
                     let resourceId = resource.id || resource.uri || '';

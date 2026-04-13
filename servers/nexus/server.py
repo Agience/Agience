@@ -23,6 +23,8 @@ Tools
   route_request     — Route a request to a registered endpoint
   exec_shell        — Execute a shell command in a sandboxed directory
   proxy_tool        — Proxy an MCP tool call through a registered endpoint
+  fetch_url         — Fetch content from a URL and return it inline
+  ask_human         — Ask a question to the human operator (async-capable)
 
 Auth
 ----
@@ -52,6 +54,7 @@ from typing import Optional
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 log = logging.getLogger("agience-server-nexus")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper(), format="%(asctime)s %(levelname)s - %(name)s - %(message)s")
@@ -556,6 +559,219 @@ async def proxy_tool(
         arguments: JSON string of tool arguments.
     """
     return f"TODO: proxy_tool not yet implemented. endpoint={endpoint}, tool={tool_name}"
+
+
+# ---------------------------------------------------------------------------
+# Tool: fetch_url
+# ---------------------------------------------------------------------------
+
+@mcp.tool(
+    description=(
+        "Fetch content from a URL and return it inline. "
+        "Useful for reading web pages, API responses, or any HTTP-accessible resource. "
+        "Does NOT create an artifact — use create_artifact separately to persist."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False),
+)
+async def fetch_url(
+    url: str,
+    query: Optional[str] = None,
+    format: Optional[str] = "text",
+    timeout: int = 30,
+    max_length: int = 100000,
+) -> str:
+    """
+    Args:
+        url: The URL to fetch.
+        query: Optional — extract only content relevant to this query (requires LLM).
+        format: Response format — 'text' (default), 'markdown', or 'html'.
+        timeout: Max seconds to wait for response.
+        max_length: Max characters to return (default 100k, truncates with notice).
+    """
+    import re
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            resp = await client.get(url, headers={"User-Agent": "Agience/1.0 (Nexus)"})
+    except httpx.TimeoutException:
+        return json.dumps({"error": f"Request timed out after {timeout}s", "url": url})
+    except httpx.RequestError as exc:
+        return json.dumps({"error": f"Request failed: {exc}", "url": url})
+
+    if resp.status_code >= 400:
+        return json.dumps({"error": f"HTTP {resp.status_code}", "url": url, "body": resp.text[:500]})
+
+    content_type = resp.headers.get("content-type", "")
+    raw_text = resp.text
+
+    # Strip HTML tags for text/markdown output
+    if format in ("text", "markdown") and "html" in content_type:
+        # Basic tag stripping — good enough for inline reading
+        raw_text = re.sub(r"<script[^>]*>.*?</script>", "", raw_text, flags=re.DOTALL | re.IGNORECASE)
+        raw_text = re.sub(r"<style[^>]*>.*?</style>", "", raw_text, flags=re.DOTALL | re.IGNORECASE)
+        raw_text = re.sub(r"<[^>]+>", " ", raw_text)
+        raw_text = re.sub(r"\s+", " ", raw_text).strip()
+    elif format == "html":
+        pass  # Return raw HTML
+
+    # Truncate if needed
+    truncated = False
+    if len(raw_text) > max_length:
+        raw_text = raw_text[:max_length]
+        truncated = True
+
+    result: dict = {
+        "url": url,
+        "status": resp.status_code,
+        "content_type": content_type,
+        "length": len(raw_text),
+        "content": raw_text,
+    }
+    if truncated:
+        result["truncated"] = True
+        result["notice"] = f"Content truncated to {max_length} characters."
+
+    # Optional: extract relevant content via LLM
+    if query and raw_text:
+        try:
+            headers = await _user_headers()
+            async with httpx.AsyncClient(timeout=60) as client:
+                llm_resp = await client.post(
+                    f"{AGIENCE_API_URI}/agents/invoke",
+                    headers=headers,
+                    json={
+                        "agent": "extract",
+                        "input": f"Extract content relevant to: {query}\n\nSource content:\n{raw_text[:50000]}",
+                    },
+                )
+            if llm_resp.status_code == 200:
+                result["extracted"] = llm_resp.json()
+        except Exception as exc:
+            log.warning("fetch_url: query extraction failed: %s", exc)
+
+    return json.dumps(result)
+
+
+# ---------------------------------------------------------------------------
+# Tool: ask_human
+# ---------------------------------------------------------------------------
+
+@mcp.tool(
+    description=(
+        "Ask a question to the human operator. Creates a pending question artifact "
+        "in the workspace and attempts delivery through available channels: "
+        "browser relay (if connected), configured notification channel, or "
+        "async artifact (human answers when they return). "
+        "Use urgency='blocking' to wait for a response, 'deferred' to continue working."
+    ),
+)
+async def ask_human(
+    workspace_id: str,
+    question: str,
+    options: Optional[list[str]] = None,
+    urgency: str = "deferred",
+    timeout_seconds: int = 120,
+) -> str:
+    """
+    Args:
+        workspace_id: Workspace where the question artifact will be created.
+        question: The question text to present to the human.
+        options: Optional list of structured answer choices.
+        urgency: 'blocking' to wait for an answer, 'deferred' to return immediately.
+        timeout_seconds: Max seconds to wait when urgency is 'blocking'.
+    """
+    # 1. Create a pending-question artifact in the workspace
+    question_context = {
+        "type": "pending_question",
+        "question": question,
+        "status": "pending",
+    }
+    if options:
+        question_context["options"] = options
+
+    headers = await _user_headers()
+    async with httpx.AsyncClient(timeout=30) as client:
+        create_resp = await client.post(
+            f"{AGIENCE_API_URI}/artifacts",
+            headers=headers,
+            json={
+                "workspace_id": workspace_id,
+                "content": question,
+                "context": json.dumps(question_context),
+            },
+        )
+
+    if create_resp.status_code >= 400:
+        return json.dumps({"error": f"Failed to create question artifact: {create_resp.status_code}"})
+
+    artifact = create_resp.json().get("artifact", create_resp.json())
+    artifact_id = artifact.get("id")
+
+    # 2. Check relay presence — is the human connected via browser?
+    relay_connected = False
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            relay_resp = await client.get(
+                f"{AGIENCE_API_URI}/mcp",
+                headers=headers,
+                params={"tool": "relay_status"},
+            )
+            if relay_resp.status_code == 200:
+                relay_data = relay_resp.json()
+                relay_connected = relay_data.get("connected", False)
+    except Exception:
+        pass  # Relay check is best-effort
+
+    # 3. Deliver the question
+    delivery_method = "artifact_only"
+
+    if relay_connected:
+        # Human is online — the artifact creation event will notify them via
+        # the WebSocket event stream. The question card appears in their workspace.
+        delivery_method = "relay_event"
+
+    # 4. For blocking mode, poll for an answer
+    if urgency == "blocking" and relay_connected:
+        import time
+        deadline = time.time() + timeout_seconds
+        poll_interval = 3  # seconds
+
+        while time.time() < deadline:
+            await asyncio.sleep(poll_interval)
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    check_resp = await client.get(
+                        f"{AGIENCE_API_URI}/artifacts/{workspace_id}/artifacts/{artifact_id}",
+                        headers=headers,
+                    )
+                if check_resp.status_code == 200:
+                    updated = check_resp.json()
+                    ctx = updated.get("context", {})
+                    if isinstance(ctx, str):
+                        ctx = json.loads(ctx)
+                    if ctx.get("status") == "answered":
+                        return json.dumps({
+                            "status": "answered",
+                            "answer": ctx.get("answer"),
+                            "artifact_id": artifact_id,
+                            "delivery_method": delivery_method,
+                        })
+            except Exception:
+                pass
+
+        return json.dumps({
+            "status": "timeout",
+            "artifact_id": artifact_id,
+            "delivery_method": delivery_method,
+            "message": f"No answer received within {timeout_seconds}s. Question remains pending.",
+        })
+
+    return json.dumps({
+        "status": "pending",
+        "artifact_id": artifact_id,
+        "delivery_method": delivery_method,
+        "message": "Question created. Human will see it when they access the workspace.",
+    })
 
 
 # ---------------------------------------------------------------------------

@@ -35,6 +35,7 @@ def test_resolve_exact_with_inheritance(tmp_path: Path, monkeypatch: pytest.Monk
 
     monkeypatch.setenv("AGIENCE_TYPES_PATHS", str(root))
     monkeypatch.setenv("AGIENCE_TYPES_DISABLE_BUILTIN", "1")
+    monkeypatch.setattr(types_service, "_default_server_ui_roots", lambda: [])
 
     # Act
     res = types_service.resolve_type_definition("text/plain; charset=utf-8")
@@ -70,6 +71,7 @@ def test_resolve_falls_back_to_wildcard(tmp_path: Path, monkeypatch: pytest.Monk
 
     monkeypatch.setenv("AGIENCE_TYPES_PATHS", str(root))
     monkeypatch.setenv("AGIENCE_TYPES_DISABLE_BUILTIN", "1")
+    monkeypatch.setattr(types_service, "_default_server_ui_roots", lambda: [])
 
     res = types_service.resolve_type_definition("text/csv")
     assert res is not None
@@ -88,6 +90,7 @@ async def test_router_resolve_uses_env_root(tmp_path: Path, monkeypatch: pytest.
 
     monkeypatch.setenv("AGIENCE_TYPES_PATHS", str(root))
     monkeypatch.setenv("AGIENCE_TYPES_DISABLE_BUILTIN", "1")
+    monkeypatch.setattr(types_service, "_default_server_ui_roots", lambda: [])
 
     resp = await client.get("/types/resolve", params={"content_type": "application/json"})
     assert resp.status_code == 200

@@ -9,6 +9,8 @@ import {
 } from 'react-icons/fi';
 import { Artifact } from '../../context/workspace/workspace.types';
 import { getStableArtifactId } from '@/utils/artifact-identifiers';
+import { invokeArtifact } from '@/api/artifacts';
+import { toast } from 'sonner';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -177,6 +179,20 @@ export const CardGridItem = ({
 
   const contentType = useMemo(() => getContentType(artifact), [artifact]);
   const removeLabel = activeSource?.type === 'collection' ? 'Remove from collection' : 'Remove from workspace';
+
+  // Drop zone — any artifact can opt in via context.drop.enabled
+  const dropConfig = useMemo(() => {
+    try {
+      const ctx = typeof artifact.context === 'string'
+        ? JSON.parse(artifact.context)
+        : artifact.context;
+      if (ctx?.drop?.enabled) {
+        return ctx.drop as { enabled: boolean; label?: string; accepts?: string[] };
+      }
+    } catch { /* ignore */ }
+    return null;
+  }, [artifact.context]);
+  const [isDropTarget, setIsDropTarget] = useState(false);
   const collectionLabelMap = useMemo(
     () => buildCollectionLabelMap([...artifacts, ...displayedArtifacts], collections),
     [artifacts, displayedArtifacts, collections],
@@ -207,7 +223,8 @@ export const CardGridItem = ({
       ? 'bg-gray-100 opacity-60 border-gray-300'
       : 'border-gray-200',
     selectable && 'cursor-pointer hover:ring-1 hover:ring-purple-300',
-    isSelected && 'ring-2 ring-purple-600 border-purple-600'
+    isSelected && 'ring-2 ring-purple-600 border-purple-600',
+    isDropTarget && 'ring-2 ring-violet-500 shadow-lg shadow-violet-200/50 border-violet-400'
   );
 
   const handleMouseDown = () => {
@@ -272,6 +289,82 @@ export const CardGridItem = ({
 
   const handleDragEnd = () => {
     draggingRef.current = false;
+  };
+
+  // ── Drop zone handlers (driven by context.drop) ──────────────────────
+  const handleDropDragOver = (e: DragEvent) => {
+    if (!dropConfig) return;
+    if (!e.dataTransfer.types.includes('application/x-agience-artifact')) return;
+    e.stopPropagation();
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    setIsDropTarget(true);
+  };
+
+  const handleDropDragLeave = (e: DragEvent) => {
+    if (!dropConfig) return;
+    const el = e.currentTarget as HTMLElement;
+    const rel = e.relatedTarget as Node | null;
+    if (!rel || !el.contains(rel)) {
+      setIsDropTarget(false);
+    }
+  };
+
+  const mimeMatches = (artifactMime: string | undefined, accepts: string[]): boolean => {
+    if (!artifactMime) return true; // unknown type — let the server decide
+    const norm = artifactMime.split(';')[0]?.trim().toLowerCase() ?? '';
+    return accepts.some(pattern => {
+      if (pattern === '*/*') return true;
+      if (pattern.endsWith('/*')) return norm.startsWith(pattern.slice(0, -1));
+      return norm === pattern.toLowerCase();
+    });
+  };
+
+  const handleDropOnCard = async (e: DragEvent) => {
+    if (!dropConfig) return;
+    e.stopPropagation();
+    e.preventDefault();
+    setIsDropTarget(false);
+
+    const raw = e.dataTransfer.getData('application/x-agience-artifact');
+    if (!raw) return;
+    let ids: string[] = [];
+    try {
+      const payload = JSON.parse(raw);
+      if (Array.isArray(payload.ids)) ids = payload.ids.map(String);
+    } catch { return; }
+
+    ids = ids.filter(id => id !== String(artifact.id));
+    if (!ids.length) return;
+
+    // Filter by accepted MIME types if configured
+    if (dropConfig.accepts?.length) {
+      const allArtifacts = [...(artifacts || []), ...(displayedArtifacts || [])];
+      ids = ids.filter(id => {
+        const a = allArtifacts.find(art => String(art.id) === id || String(art.root_id) === id);
+        return mimeMatches(a?.content_type, dropConfig.accepts!);
+      });
+      if (!ids.length) {
+        toast.warning(`This transform only accepts: ${dropConfig.accepts.join(', ')}`);
+        return;
+      }
+    }
+
+    const artifactId = String(artifact.id);
+    const workspaceId = activeSource?.type === 'workspace' ? activeSource.id : undefined;
+    const label = dropConfig.label ?? 'Running transform';
+
+    toast.info(`${label}…`);
+    try {
+      const result = await invokeArtifact(artifactId, undefined, undefined, workspaceId, ids);
+      if (result.error) {
+        toast.error(`Transform failed: ${result.error}`);
+      } else {
+        toast.success('Transform completed');
+      }
+    } catch (err) {
+      toast.error(`Transform failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    }
   };
 
   const heading =
@@ -411,6 +504,10 @@ export const CardGridItem = ({
           draggable={draggable}
           onDragStart={draggable ? handleDragStart : undefined}
           onDragEnd={draggable ? handleDragEnd : undefined}
+          onDragOver={dropConfig ? handleDropDragOver : undefined}
+          onDragLeave={dropConfig ? handleDropDragLeave : undefined}
+          onDrop={dropConfig ? handleDropOnCard : undefined}
+          title={isDropTarget ? (dropConfig?.label ?? 'Drop to run') : undefined}
           onMouseEnter={() => setHovered(true)}
           onMouseLeave={() => setHovered(false)}
         >

@@ -91,6 +91,7 @@ def transform_executor(*, db=None, user_id, arango_db=None,
     arguments or inside ``agent_params``.
     """
     from services import mcp_service, workspace_service
+    from services import server_registry
     from core.dependencies import get_arango_db as _get_arango_db
 
     params = dict(agent_params or {})
@@ -146,7 +147,7 @@ def transform_executor(*, db=None, user_id, arango_db=None,
         if raw_server in ("agience-core", "desktop-host") or raw_server.startswith("local-mcp:"):
             server = raw_server
         else:
-            server = mcp_service.resolve_builtin_server_id(raw_server)
+            server = server_registry.resolve_name_to_id(raw_server)
         tool = run.get("tool")
         if not tool:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Transform artifact 'run' block is missing 'tool'.")
@@ -212,7 +213,7 @@ def transform_executor(*, db=None, user_id, arango_db=None,
                 db=_arango_db,
                 user_id=user_id,
                 workspace_id=params["workspace_id"],
-                server_artifact_id=mcp_service.resolve_builtin_server_id("verso"),
+                server_artifact_id=server_registry.resolve_name_to_id("verso"),
                 tool_name="run_workflow",
                 arguments=workflow_params,
             )
@@ -267,7 +268,7 @@ def transform_executor(*, db=None, user_id, arango_db=None,
                 db=_arango_db,
                 user_id=user_id,
                 workspace_id=params["workspace_id"],
-                server_artifact_id=mcp_service.resolve_builtin_server_id("verso"),
+                server_artifact_id=server_registry.resolve_name_to_id("verso"),
                 tool_name="invoke_llm",
                 arguments=invoke_args,
             )

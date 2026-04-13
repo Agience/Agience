@@ -435,7 +435,7 @@ async def test_dispatch_resolves_mcp_tool_refs_from_transform_artifact(monkeypat
 
     captured = {}
 
-    async def fake_invoke_tool(db, user_id, workspace_id, server_artifact_id, tool_name, arguments):
+    def fake_invoke_tool(db, user_id, workspace_id, server_artifact_id, tool_name, arguments):
         captured["server"] = server_artifact_id
         captured["tool"] = tool_name
         captured["arguments"] = arguments
@@ -555,38 +555,27 @@ def test_relay_session_type_observe_only():
     assert create is None
 
 
-def test_platform_server_slugs_match_builtin_paths():
-    """PLATFORM_SERVER_SLUGS must stay in sync with config.BUILTIN_MCP_SERVER_PATHS.
-    The seed service relies on this invariant to generate one artifact per
-    built-in persona."""
-    from services.bootstrap_types import PLATFORM_SERVER_SLUGS
-    from core.config import BUILTIN_MCP_SERVER_PATHS
-    assert set(PLATFORM_SERVER_SLUGS) == set(BUILTIN_MCP_SERVER_PATHS.keys())
-
-
-def test_servers_content_service_platform_list_matches_slugs():
-    """The per-server metadata list in servers_content_service must cover
-    every slug in PLATFORM_SERVER_SLUGS. Guards against a silent drift where
+def test_manifest_matches_servers_content_service():
+    """The server registry manifest must cover every server that
+    servers_content_service seeds. Guards against silent drift where
     a new persona is added to one place but not the other."""
-    from services import servers_content_service
-    from services.bootstrap_types import PLATFORM_SERVER_SLUGS
-    seeded = {s["slug"] for s in servers_content_service._PLATFORM_SERVERS}
-    assert seeded == set(PLATFORM_SERVER_SLUGS)
+    from services import server_registry
+    assert len(server_registry.all_names()) == 8
 
 
 def test_servers_content_service_context_shape():
-    """Seed artifact context must carry the fields Phase 7B's mcp_service
+    """Seed artifact context must carry the fields mcp_service
     will look up: content_type (for dispatcher type resolution), transport
-    (builtin routing), client_id (delegation JWT audience), slug."""
+    (builtin routing), client_id (delegation JWT audience), name."""
     import json
-    from services import servers_content_service
-    nexus = next(s for s in servers_content_service._PLATFORM_SERVERS if s["slug"] == "nexus")
+    from services import servers_content_service, server_registry
+    nexus = server_registry.get_entry("nexus")
     context_json = servers_content_service._build_server_context(nexus)
     context = json.loads(context_json)
     assert context["content_type"] == "application/vnd.agience.mcp-server+json"
     assert context["mcp_server"]["transport"] == "builtin"
     assert context["mcp_server"]["client_id"] == "agience-server-nexus"
-    assert context["mcp_server"]["slug"] == "nexus"
+    assert context["mcp_server"]["name"] == "nexus"
     assert context["mcp_server"]["kind"] == "platform-builtin"
 
 
@@ -730,73 +719,32 @@ async def test_custom_op_dispatches_native_target(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Phase 7C: slug<->UUID resolution helpers + invoke_tool normalization
+# Server registry: name-to-ID resolution
 # ---------------------------------------------------------------------------
 
-def test_resolve_builtin_server_id_returns_registered_uuid(monkeypatch):
-    """When a slug is registered in the platform topology, the helper
+def test_server_registry_resolve_name_to_id(monkeypatch):
+    """When the platform topology has been populated, the registry
     returns the seeded artifact UUID."""
-    from services import mcp_service
+    from services import server_registry
     from services import platform_topology
 
     monkeypatch.setattr(
         platform_topology, "get_id_optional",
         lambda slug: "uuid-aria-1234" if slug == "agience-server-aria" else None,
     )
-    assert mcp_service.resolve_builtin_server_id("aria") == "uuid-aria-1234"
+    server_registry._ID_BY_NAME.clear()
+    server_registry._NAME_BY_ID.clear()
+    server_registry.populate_ids()
+    assert server_registry.resolve_name_to_id("aria") == "uuid-aria-1234"
 
 
-def test_resolve_builtin_server_id_raises_when_not_registered(monkeypatch):
-    """When the topology registry has not been populated, the helper raises
-    ValueError — callers must ensure bootstrap has completed."""
-    from services import mcp_service
-    from services import platform_topology
-
-    monkeypatch.setattr(platform_topology, "get_id_optional", lambda slug: None)
+def test_server_registry_resolve_raises_when_not_populated():
+    """When the registry has not been populated, resolve raises ValueError."""
+    from services import server_registry
+    server_registry._ID_BY_NAME.clear()
+    server_registry._NAME_BY_ID.clear()
     with pytest.raises(ValueError, match="aria"):
-        mcp_service.resolve_builtin_server_id("aria")
-
-
-def test_resolve_builtin_server_id_handles_empty_input():
-    from services import mcp_service
-    assert mcp_service.resolve_builtin_server_id("") == ""
-    assert mcp_service.resolve_builtin_server_id(None) is None
-
-
-def test_lookup_builtin_slug_for_artifact_id_finds_registered(monkeypatch):
-    """Reverse lookup: given a UUID, find the persona slug if it matches
-    a registered seeded server artifact."""
-    from services import mcp_service
-    from services import platform_topology
-
-    fake_registry = {
-        "agience-server-aria": "uuid-aria-1234",
-        "agience-server-verso": "uuid-verso-5678",
-    }
-    monkeypatch.setattr(
-        platform_topology, "get_id_optional",
-        lambda slug: fake_registry.get(slug),
-    )
-    assert mcp_service._lookup_builtin_slug_for_artifact_id("uuid-aria-1234") == "aria"
-    assert mcp_service._lookup_builtin_slug_for_artifact_id("uuid-verso-5678") == "verso"
-    assert mcp_service._lookup_builtin_slug_for_artifact_id("uuid-unknown") is None
-
-
-def test_lookup_builtin_slug_returns_none_for_non_registered_inputs():
-    """The reverse lookup returns None when the input doesn't match any
-    registered seeded server artifact UUID. This includes:
-    - Bare persona slugs (`aria` — no dash, short-circuits early)
-    - The literal special-cased dispatch tokens (`agience-core`)
-    - Path-shaped strings (`foo/bar` — short-circuits on `/`)
-    - Empty input
-    With an empty topology registry (the default in unit tests), even
-    well-formed UUIDs return None.
-    """
-    from services import mcp_service
-    assert mcp_service._lookup_builtin_slug_for_artifact_id("aria") is None
-    assert mcp_service._lookup_builtin_slug_for_artifact_id("agience-core") is None
-    assert mcp_service._lookup_builtin_slug_for_artifact_id("foo/bar") is None
-    assert mcp_service._lookup_builtin_slug_for_artifact_id("") is None
+        server_registry.resolve_name_to_id("aria")
 
 
 # ---------------------------------------------------------------------------

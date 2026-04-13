@@ -32,6 +32,12 @@ Workspace Curation:
 Analysis & Intelligence:
   extract_information  -- Extract structured information from source artifacts.
 
+Tool Discovery:
+  discover_tools       -- Discover available tools across connected MCP servers.
+
+Task Tracking:
+  todo_list            -- Manage a task list within a workspace.
+
 Communication & Routing:
   ask               -- Ask a question grounded in the knowledge base.
 """
@@ -54,7 +60,7 @@ from mcp.types import ToolAnnotations
 
 from entities.api_key import APIKey as APIKeyEntity
 from services.dependencies import AuthContext, resolve_auth
-from schemas.arango.initialize import get_arangodb_connection
+from arango import ArangoClient
 from core import config
 
 _repo_root = Path(__file__).resolve().parents[2]
@@ -123,14 +129,31 @@ mcp._mcp_server.version = _app_version
 # ---------------------------------------------------------------------------
 # DB helpers (short-lived sessions per tool call)
 # ---------------------------------------------------------------------------
-def _get_arango():
-    return get_arangodb_connection(
-        host=config.ARANGO_HOST,
-        port=config.ARANGO_PORT,
+class _ArangoSession:
+    """Wraps ArangoClient + StandardDatabase so db.close() delegates to the client."""
+
+    def __init__(self, client: ArangoClient, db):
+        object.__setattr__(self, "_client", client)
+        object.__setattr__(self, "_db", db)
+
+    def close(self):
+        object.__getattribute__(self, "_client").close()
+
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, "_db"), name)
+
+    def __setattr__(self, name, value):
+        setattr(object.__getattribute__(self, "_db"), name, value)
+
+
+def _get_arango() -> "_ArangoSession":
+    client = ArangoClient(hosts=f"http://{config.ARANGO_HOST}:{config.ARANGO_PORT}")
+    db = client.db(
+        config.ARANGO_DATABASE,
         username=config.ARANGO_USERNAME,
         password=config.ARANGO_PASSWORD,
-        db_name=config.ARANGO_DATABASE,
     )
+    return _ArangoSession(client, db)
 
 
 def _user_id() -> str:
@@ -466,12 +489,13 @@ def extract_information(
 
     arango_db = _get_arango()
     try:
-        # Phase 7C — pass the seeded Aria artifact UUID, not the bare slug.
+        # Pass the seeded Aria artifact UUID, not the bare name.
+        from services import server_registry
         return mcp_service.invoke_tool(
             db=arango_db,
             user_id=_user_id(),
             workspace_id=workspace_id,
-            server_artifact_id=mcp_service.resolve_builtin_server_id("aria"),
+            server_artifact_id=server_registry.resolve_name_to_id("aria"),
             tool_name="extract_units",
             arguments={
                 "workspace_id": workspace_id,
@@ -626,6 +650,166 @@ def ask(
     return {"answer": answer, "sources": sources}
 
 
+# ===================================================================
+# TOOLS  -- Tool Discovery
+# ===================================================================
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
+def discover_tools(
+    query: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    server_name: Optional[str] = None,
+) -> dict:
+    """Discover available tools across connected MCP servers.
+
+    Returns tool names, descriptions, and which server provides them.
+    Optionally filter by keyword query, scope to a workspace, or
+    list tools on a specific server.
+
+    Use this to understand what capabilities are available before
+    calling tools by name.
+    """
+    from services import mcp_service
+
+    user_id = _user_id()
+    arango = _get_arango()
+    try:
+        if workspace_id:
+            servers = mcp_service.list_servers_for_workspace(arango, user_id, workspace_id)
+        else:
+            servers = mcp_service.list_all_servers_for_user(arango, user_id)
+
+        q = (query or "").strip().lower()
+        results = []
+        for srv in servers or []:
+            srv_name = getattr(srv, "name", None) or getattr(srv, "server_name", None) or ""
+            srv_id = getattr(srv, "id", None) or getattr(srv, "server_id", None) or ""
+
+            if server_name and srv_name.lower() != server_name.lower():
+                continue
+
+            tools = getattr(srv, "tools", None) or []
+            for tool in tools:
+                t_name = getattr(tool, "name", None) or (tool.get("name") if isinstance(tool, dict) else "")
+                t_desc = getattr(tool, "description", None) or (tool.get("description", "") if isinstance(tool, dict) else "")
+
+                if q and q not in t_name.lower() and q not in t_desc.lower():
+                    continue
+
+                results.append({
+                    "tool": t_name,
+                    "description": t_desc,
+                    "server": srv_name,
+                    "server_id": srv_id,
+                })
+
+        return {"count": len(results), "tools": results}
+    except Exception as exc:
+        logger.warning("discover_tools failed: %s", exc)
+        return {"error": str(exc)}
+    finally:
+        arango.close()
+
+
+# ===================================================================
+# TOOLS  -- Task Tracking
+# ===================================================================
+
+@mcp.tool()
+def todo_list(
+    workspace_id: str,
+    command: Literal["list", "add", "update", "remove"],
+    item: Optional[str] = None,
+    item_id: Optional[int] = None,
+    status: Optional[Literal["not-started", "in-progress", "completed"]] = None,
+) -> dict:
+    """Manage a todo list for tracking tasks within a workspace.
+
+    The todo list is stored as a workspace artifact with a well-known slug.
+    Multiple todo lists can exist in a workspace — each is just an artifact.
+
+    Commands:
+      list    -- Return all items in the todo list.
+      add     -- Add a new item (provide 'item' text).
+      update  -- Update an item's status (provide 'item_id' and 'status').
+      remove  -- Remove an item (provide 'item_id').
+    """
+    from services import workspace_service
+
+    user_id = _user_id()
+    db = _get_arango()
+    try:
+        # Find or create the todo artifact by slug
+        TODO_SLUG = "todo-list"
+        existing = None
+        artifacts = workspace_service.list_workspace_artifacts(db, user_id, workspace_id)
+        for a in (artifacts or []):
+            ctx = getattr(a, "context", None)
+            if isinstance(ctx, str):
+                try:
+                    ctx = json.loads(ctx)
+                except Exception:
+                    ctx = {}
+            if isinstance(ctx, dict) and ctx.get("slug") == TODO_SLUG:
+                existing = a
+                break
+
+        # Parse current items
+        items = []
+        if existing:
+            content = getattr(existing, "content", None) or "[]"
+            try:
+                items = json.loads(content)
+            except Exception:
+                items = []
+
+        if command == "list":
+            return {"workspace_id": workspace_id, "items": items, "count": len(items)}
+
+        if command == "add":
+            if not item:
+                return {"error": "Provide 'item' text to add."}
+            next_id = max((i.get("id", 0) for i in items), default=0) + 1
+            items.append({"id": next_id, "title": item, "status": "not-started"})
+
+        elif command == "update":
+            if item_id is None or not status:
+                return {"error": "Provide 'item_id' and 'status' to update."}
+            found = False
+            for i in items:
+                if i.get("id") == item_id:
+                    i["status"] = status
+                    found = True
+                    break
+            if not found:
+                return {"error": f"Item {item_id} not found."}
+
+        elif command == "remove":
+            if item_id is None:
+                return {"error": "Provide 'item_id' to remove."}
+            items = [i for i in items if i.get("id") != item_id]
+
+        # Save back
+        new_content = json.dumps(items)
+        todo_context = json.dumps({"slug": TODO_SLUG, "type": "todo_list"})
+
+        if existing:
+            workspace_service.update_artifact(
+                db, user_id, workspace_id, existing.id,
+                content=new_content,
+            )
+        else:
+            workspace_service.create_workspace_artifact(
+                db, user_id, workspace_id,
+                context=todo_context,
+                content=new_content,
+            )
+
+        return {"workspace_id": workspace_id, "items": items, "count": len(items), "command": command}
+    finally:
+        db.close()
+
+
 @mcp.tool()
 def relay_status() -> dict:
     """Return the Desktop Host Relay connection status for the current user.
@@ -773,6 +957,8 @@ TOOL_REGISTRY: Dict[str, Any] = {
     "commit_preview": commit_preview,
     "commit_workspace": commit_workspace,
     "ask": ask,
+    "discover_tools": discover_tools,
+    "todo_list": todo_list,
 }
 
 

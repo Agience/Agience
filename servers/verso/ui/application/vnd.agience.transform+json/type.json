@@ -190,6 +190,25 @@
           "type": "string"
         }
       }
+    },
+    "drop": {
+      "type": "object",
+      "description": "Drop zone configuration. When enabled, the artifact card accepts artifact drops and invokes the transform with the dropped artifact IDs.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether this transform card accepts artifact drops. Default false."
+        },
+        "label": {
+          "type": "string",
+          "description": "Tooltip shown when dragging over the card. Default: 'Drop to run'."
+        },
+        "accepts": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "MIME content_type filters the card will accept. Supports wildcards (e.g. 'text/*'). Omit or set ['*/*'] to accept any artifact."
+        }
+      }
     }
   },
   "operations": {

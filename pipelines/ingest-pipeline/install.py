@@ -15,13 +15,22 @@ Usage
     # Or via environment variables:
     AGIENCE_API_URL=...  AGIENCE_API_KEY=...  AGIENCE_WORKSPACE_ID=... python install.py
 
-After running, the workspace will contain four Transform artifacts with stable
+After running, the workspace will contain five Transform artifacts with stable
 slugs that you can invoke via POST /artifacts/{id}/invoke or chain in a workflow:
 
     ingest-dedup              — SHA-256 deduplication check
     ingest-pdf-extract        — PDF text extraction (built-in PyPDF; swap to Docling)
     ingest-extract-metadata   — LLM-based metadata extraction
     ingest-apply-metadata     — Write extracted metadata back to source artifact
+    ingest-pipeline           — Full pipeline orchestrator (runs all four steps)
+
+To ingest a PDF, invoke the "Ingest Pipeline" transform with the PDF artifact:
+
+    POST /artifacts/{ingest-pipeline-id}/invoke
+    {
+        "workspace_id": "<workspace-uuid>",
+        "artifacts": ["<pdf-artifact-id>"]
+    }
 
 To swap the PDF extractor to a Docling (or other) MCP server, edit the
 ingest-pdf-extract artifact in the Agience UI and change run.server / run.tool
@@ -59,9 +68,9 @@ def _headers(api_key: str) -> dict[str, str]:
 def _find_by_slug(api_url: str, api_key: str, workspace_id: str, slug: str) -> Optional[dict]:
     """Return the first artifact in the workspace with the given slug, or None."""
     resp = httpx.get(
-        f"{api_url}/workspaces/{workspace_id}/artifacts",
+        f"{api_url}/artifacts/list",
         headers=_headers(api_key),
-        params={"slug": slug, "limit": 2},
+        params={"container_id": workspace_id},
         timeout=30,
     )
     if resp.status_code == 404:
@@ -69,17 +78,19 @@ def _find_by_slug(api_url: str, api_key: str, workspace_id: str, slug: str) -> O
     resp.raise_for_status()
     data = resp.json()
     items = data.get("items") or data.get("artifacts") or (data if isinstance(data, list) else [])
-    return items[0] if items else None
+    return next((item for item in items if item.get("slug") == slug), None)
 
 
 def _create_artifact(api_url: str, api_key: str, workspace_id: str, slug: str, context: dict) -> dict:
     payload = {
+        "container_id": workspace_id,
         "slug": slug,
         "context": json.dumps(context),
         "content": "",
+        "content_type": context.get("content_type"),
     }
     resp = httpx.post(
-        f"{api_url}/workspaces/{workspace_id}/artifacts",
+        f"{api_url}/artifacts",
         headers=_headers(api_key),
         json=payload,
         timeout=30,
@@ -89,7 +100,10 @@ def _create_artifact(api_url: str, api_key: str, workspace_id: str, slug: str, c
 
 
 def _update_artifact(api_url: str, api_key: str, artifact_id: str, context: dict) -> dict:
-    payload = {"context": json.dumps(context)}
+    payload = {
+        "context": json.dumps(context),
+        "content_type": context.get("content_type"),
+    }
     resp = httpx.patch(
         f"{api_url}/artifacts/{artifact_id}",
         headers=_headers(api_key),

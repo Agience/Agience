@@ -1108,12 +1108,14 @@ async def _run_chat_turn_impl(
                 collected_content: list[str] = []
                 tc_accum: dict[int, dict] = {}      # index -> {id, name, arguments}
                 stream_usage = None
+                delta_tasks: list[asyncio.Task] = []
 
-                async with oai_client.chat.completions.create(
+                stream = await oai_client.chat.completions.create(
                     model=model, messages=working_messages, tools=all_tools,
                     tool_choice="auto", max_tokens=2048, temperature=0.7,
                     stream=True, stream_options={"include_usage": True},
-                ) as stream:
+                )
+                async with stream:
                     async for chunk in stream:
                         if chunk.usage:
                             stream_usage = chunk.usage
@@ -1123,7 +1125,10 @@ async def _run_chat_turn_impl(
 
                         if delta.content:
                             collected_content.append(delta.content)
-                            await _push_chat_delta(delta_http, chat_artifact_id, workspace_id, delta.content)
+                            if chat_artifact_id:
+                                delta_tasks.append(asyncio.create_task(
+                                    _push_chat_delta(delta_http, chat_artifact_id, workspace_id, delta.content)
+                                ))
 
                         if delta.tool_calls:
                             for tc_d in delta.tool_calls:
@@ -1137,6 +1142,10 @@ async def _run_chat_turn_impl(
                                         tc_accum[idx]["name"] += tc_d.function.name
                                     if tc_d.function.arguments:
                                         tc_accum[idx]["arguments"] += tc_d.function.arguments
+
+                # Drain all delta push tasks concurrently before closing the HTTP client
+                if delta_tasks:
+                    await asyncio.gather(*delta_tasks, return_exceptions=True)
 
                 content_str = "".join(collected_content)
 

@@ -4,7 +4,7 @@ Ophan pushes numeric limits after Stripe subscription events.
 Ophan reads usage for the billing settings UI.
 
 Authentication: kernel server JWT (client_credentials exchange with
-PLATFORM_INTERNAL_SECRET, principal_type=server, client_id in KERNEL_SERVER_IDS).
+PLATFORM_INTERNAL_SECRET, principal_type=server, client_id in server_registry.all_client_ids()).
 """
 
 import logging
@@ -16,7 +16,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from arango.database import StandardDatabase
 
-from core.config import KERNEL_SERVER_IDS
+from services import server_registry
 from core.dependencies import get_arango_db
 from services.auth_service import verify_token
 from services import gate_service
@@ -51,7 +51,7 @@ def _require_kernel_server(
         raise HTTPException(403, "Kernel server token required")
 
     client_id = payload.get("client_id") or payload.get("sub", "").replace("server/", "")
-    if client_id not in KERNEL_SERVER_IDS:
+    if client_id not in server_registry.all_client_ids():
         raise HTTPException(403, "Not a kernel server")
 
     return client_id

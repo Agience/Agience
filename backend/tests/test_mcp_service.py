@@ -1,9 +1,7 @@
 """Unit tests for services.mcp_service.
 
 Covers the spine of the MCP proxy:
-  - Builtin server config resolution from BUILTIN_MCP_SERVER_PATHS
-  - Slug ↔ artifact-UUID round-trips (`resolve_builtin_server_id`,
-    `_lookup_builtin_slug_for_artifact_id`)
+  - Server registry manifest loading and name-to-ID resolution
   - Delegation JWT injection on builtin invokes (RFC 8693 act.sub claim)
   - `agience-core` short-circuit
   - Auth header resolution: oauth2 / api_key / static / missing
@@ -23,6 +21,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from services import mcp_service
+from services import server_registry
 from mcp_client.contracts import (
     MCPAuthConfig as MCPServerAuth,
     MCPServerConfig,
@@ -59,74 +58,64 @@ class TestExtractContentType:
 
 
 # ---------------------------------------------------------------------------
-# Builtin config
+# Server registry
 # ---------------------------------------------------------------------------
 
-class TestBuiltinConfig:
-    def test_known_persona_returns_http_config(self):
-        cfg = mcp_service._get_builtin_http_server_config("nexus")
-        assert cfg is not None
+class TestServerRegistry:
+    def test_manifest_loads_all_personas(self):
+        names = server_registry.all_names()
+        assert "aria" in names
+        assert "nexus" in names
+        assert len(names) == 8
+
+    def test_get_entry_returns_manifest_data(self):
+        entry = server_registry.get_entry("aria")
+        assert entry is not None
+        assert entry.client_id == "agience-server-aria"
+        assert entry.path == "/aria/mcp"
+
+    def test_get_entry_unknown_returns_none(self):
+        assert server_registry.get_entry("not-a-persona") is None
+
+    def test_all_client_ids_is_frozenset(self):
+        cids = server_registry.all_client_ids()
+        assert isinstance(cids, frozenset)
+        assert "agience-server-nexus" in cids
+
+    def test_resolve_name_to_id_before_populate_raises(self):
+        # Clear any previously populated IDs
+        server_registry._ID_BY_NAME.clear()
+        server_registry._NAME_BY_ID.clear()
+        with pytest.raises(ValueError, match="aria"):
+            server_registry.resolve_name_to_id("aria")
+
+    def test_resolve_name_to_id_after_populate(self, monkeypatch):
+        monkeypatch.setattr(
+            "services.platform_topology.get_id_optional",
+            lambda slug: f"uuid-{slug}" if "aria" in slug else None,
+        )
+        server_registry._ID_BY_NAME.clear()
+        server_registry._NAME_BY_ID.clear()
+        server_registry.populate_ids()
+        assert server_registry.resolve_name_to_id("aria") == "uuid-agience-server-aria"
+
+    def test_build_http_config(self, monkeypatch):
+        monkeypatch.setenv("AGIENCE_SERVER_HOST_URI", "https://servers.example.com")
+        cfg = server_registry.build_http_config("nexus")
         assert cfg.id == "nexus"
         assert cfg.transport.type == "http"
-        assert "/nexus" in cfg.transport.well_known or cfg.transport.well_known.endswith(":8082")
+        assert "/nexus" in cfg.transport.well_known
 
-    def test_unknown_persona_returns_none(self):
-        assert mcp_service._get_builtin_http_server_config("not-a-persona") is None
-
-    def test_derive_servers_host_uri_explicit_env(self, monkeypatch):
-        monkeypatch.setenv("AGIENCE_SERVER_HOST_URI", "https://servers.example.com/")
-        assert mcp_service._derive_servers_host_uri() == "https://servers.example.com"
-
-    def test_derive_servers_host_uri_falls_back_to_backend_uri(self, monkeypatch):
-        monkeypatch.delenv("AGIENCE_SERVER_HOST_URI", raising=False)
-        with patch("core.config.BACKEND_URI", "http://example.com:8081"):
-            uri = mcp_service._derive_servers_host_uri()
-        assert "example.com" in uri
-        assert uri.endswith(":8082")
-
-
-# ---------------------------------------------------------------------------
-# Slug ↔ artifact UUID
-# ---------------------------------------------------------------------------
-
-class TestSlugResolution:
-    def test_resolve_builtin_server_id_returns_registered_uuid(self):
-        with patch("services.platform_topology.get_id_optional", return_value="uuid-1"):
-            assert mcp_service.resolve_builtin_server_id("nexus") == "uuid-1"
-
-    def test_resolve_builtin_server_id_raises_when_not_registered(self):
-        with patch("services.platform_topology.get_id_optional", return_value=None):
-            with pytest.raises(ValueError, match="nexus"):
-                mcp_service.resolve_builtin_server_id("nexus")
-
-    def test_resolve_builtin_server_id_empty_input(self):
-        assert mcp_service.resolve_builtin_server_id("") == ""
-
-    def test_lookup_builtin_slug_for_uuid_round_trip(self):
-        target_uuid = "abcd1234-aaaa-bbbb-cccc-deadbeefcafe"
-        from services import bootstrap_types as bt
-
-        def fake_get_id(slug: str):
-            return target_uuid if slug == f"{bt.SERVER_ARTIFACT_SLUG_PREFIX}aria" else None
-
-        with patch("services.platform_topology.get_id_optional", side_effect=fake_get_id):
-            assert mcp_service._lookup_builtin_slug_for_artifact_id(target_uuid) == "aria"
-
-    def test_lookup_builtin_slug_for_unknown_uuid_returns_none(self):
-        with patch("services.platform_topology.get_id_optional", return_value=None):
-            assert (
-                mcp_service._lookup_builtin_slug_for_artifact_id(
-                    "00000000-0000-0000-0000-000000000000"
-                )
-                is None
-            )
-
-    def test_lookup_builtin_slug_rejects_obvious_non_uuid(self):
-        # Plain word with no hyphens — short-circuits before any registry lookup.
-        assert mcp_service._lookup_builtin_slug_for_artifact_id("nexus") is None
-        assert mcp_service._lookup_builtin_slug_for_artifact_id("") is None
-        # Strings with slashes are rejected too.
-        assert mcp_service._lookup_builtin_slug_for_artifact_id("foo/bar") is None
+    def test_is_builtin_id(self, monkeypatch):
+        monkeypatch.setattr(
+            "services.platform_topology.get_id_optional",
+            lambda slug: "uuid-1" if "aria" in slug else None,
+        )
+        server_registry._ID_BY_NAME.clear()
+        server_registry._NAME_BY_ID.clear()
+        server_registry.populate_ids()
+        assert server_registry.is_builtin_id("uuid-1") is True
+        assert server_registry.is_builtin_id("random-uuid") is False
 
 
 # ---------------------------------------------------------------------------
@@ -152,11 +141,15 @@ class TestInvokeToolBuiltin:
         fake_client.close.assert_called_once()
         create_local.assert_called_once()
 
-    def test_builtin_persona_injects_delegation_token(self):
+    def test_builtin_persona_injects_delegation_token(self, monkeypatch):
+        # Populate registry so "nexus" is a known builtin name
+        monkeypatch.setattr(
+            "services.platform_topology.get_id_optional",
+            lambda slug: None,  # No IDs populated for this test
+        )
         fake_client = MagicMock()
         fake_client.call_tool.return_value = {"content": "tool-result"}
         with (
-            patch("services.mcp_service._lookup_builtin_slug_for_artifact_id", return_value=None),
             patch(
                 "services.auth_service.issue_delegation_token", return_value="delegation-jwt"
             ) as issue,
@@ -177,15 +170,20 @@ class TestInvokeToolBuiltin:
         assert cfg.runtime_headers == {"Authorization": "Bearer delegation-jwt"}
         fake_client.close.assert_called_once()
 
-    def test_builtin_persona_uuid_normalises_to_slug(self):
+    def test_builtin_persona_uuid_normalises(self, monkeypatch):
         """If the caller passes a seeded UUID for a builtin server, it routes
-        through the same builtin path as the slug."""
+        through the same builtin path as the name."""
         fake_client = MagicMock()
         fake_client.call_tool.return_value = {"ok": True}
+        # Populate registry with a known UUID for aria
+        monkeypatch.setattr(
+            "services.platform_topology.get_id_optional",
+            lambda slug: "abcd1234-aaaa-bbbb-cccc-deadbeefcafe" if "aria" in slug else None,
+        )
+        server_registry._ID_BY_NAME.clear()
+        server_registry._NAME_BY_ID.clear()
+        server_registry.populate_ids()
         with (
-            patch(
-                "services.mcp_service._lookup_builtin_slug_for_artifact_id", return_value="aria"
-            ),
             patch(
                 "services.auth_service.issue_delegation_token", return_value="dt"
             ) as issue,
@@ -204,7 +202,6 @@ class TestInvokeToolBuiltin:
         fake_client = MagicMock()
         fake_client.call_tool.return_value = {}
         with (
-            patch("services.mcp_service._lookup_builtin_slug_for_artifact_id", return_value=None),
             patch("services.auth_service.issue_delegation_token") as issue,
             patch("mcp_client.adapter.create_client", return_value=fake_client) as create_client,
         ):
@@ -221,7 +218,6 @@ class TestInvokeToolBuiltin:
 
     def test_unknown_server_raises_value_error(self):
         with (
-            patch("services.mcp_service._lookup_builtin_slug_for_artifact_id", return_value=None),
             patch("services.mcp_service._get_server_config", side_effect=ValueError("nope")),
             patch(
                 "services.mcp_service._get_server_config_from_collections", return_value=None

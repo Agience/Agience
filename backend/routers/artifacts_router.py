@@ -58,6 +58,7 @@ class CreateArtifactRequest(BaseModel):
     """Create a new artifact inside a container."""
     container_id: str
     source_artifact_id: Optional[str] = None  # copy content/context from this artifact
+    slug: Optional[str] = None
     context: Optional[str] = None       # JSON string
     content: Optional[str] = None
     content_type: Optional[str] = None
@@ -131,12 +132,17 @@ class ArtifactSearchRequest(BaseModel):
 
 
 class SearchHitResponse(BaseModel):
-    """Lightweight search hit — IDs only."""
+    """Search hit with content fields for downstream consumers."""
     id: str
     score: float
     root_id: str
     version_id: str
     collection_id: Optional[str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    content: Optional[str] = None
+    tags: Optional[List[str]] = None
+    highlights: Optional[Dict[str, List[str]]] = None
 
 
 class ArtifactSearchResponse(BaseModel):
@@ -266,18 +272,16 @@ def _resolve_builtin_server_artifact_id(
     """Resolve a built-in persona slug (e.g. ``nexus``) to artifact UUID.
 
     This is a startup invariant: platform topology must be pre-resolved before
-    request handling begins. If the slug registry is missing, raise an explicit
+    request handling begins. If the registry is missing, raise an explicit
     error instead of silently falling back to unresolved IDs.
     """
     _ = arango_db  # Signature kept for call-site symmetry.
-    from services.bootstrap_types import PLATFORM_SERVER_SLUGS, SERVER_ARTIFACT_SLUG_PREFIX
+    from services import server_registry
 
-    if artifact_id not in PLATFORM_SERVER_SLUGS:
+    if artifact_id not in server_registry.all_names():
         return artifact_id
 
-    from services.platform_topology import get_id as _get_id
-
-    return _get_id(f"{SERVER_ARTIFACT_SLUG_PREFIX}{artifact_id}")
+    return server_registry.resolve_name_to_id(artifact_id)
 
 
 # =============================================================================
@@ -416,9 +420,6 @@ async def create_artifact(
         add_artifact_to_collection(arango_db, body.container_id, root_id)
         return source.to_dict()
 
-    artifact_id = str(uuid.uuid4())
-    now_iso = _now_iso()
-
     # Build context dict — merge content_type into context if provided.
     context_str = body.context
     if body.content_type and context_str:
@@ -433,24 +434,18 @@ async def create_artifact(
         import json
         context_str = json.dumps({"content_type": body.content_type})
 
-    from db.arango import create_artifact as create_collection_artifact, add_artifact_to_collection
-    from entities.artifact import Artifact as ArtifactEntity
+    from services import workspace_service
 
-    entity = ArtifactEntity(
-        id=artifact_id,
-        root_id=artifact_id,
-        collection_id=body.container_id,
-        context=context_str,
-        content=body.content,
+    entity = workspace_service.create_workspace_artifact(
+        db=arango_db,
+        user_id=auth.user_id,
+        workspace_id=body.container_id,
+        context=context_str or "",
+        content=body.content or "",
+        slug=body.slug,
         content_type=body.content_type,
-        created_by=auth.user_id,
-        created_time=now_iso,
-        modified_by=auth.user_id,
-        modified_time=now_iso,
     )
-    result = create_collection_artifact(arango_db, entity)
-    add_artifact_to_collection(arango_db, body.container_id, entity.root_id)
-    return result.to_dict()
+    return entity.to_dict()
 
 
 # ---------- GET /artifacts/{artifact_id} — Read ----------
@@ -523,6 +518,7 @@ async def update_artifact(
         context=body.context,
         content=body.content,
         state=body.state,
+        content_type=body.content_type,
     )
     return updated.to_dict()
 
@@ -604,8 +600,6 @@ async def invoke_artifact(
     # Resolve builtin server slug (e.g. "aria") to its DB artifact id.
     artifact_id = _resolve_builtin_server_artifact_id(arango_db, artifact_id)
 
-    invoke_grant = check_access(auth, artifact_id, "invoke", arango_db)
-
     doc = _find_artifact(arango_db, artifact_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Not found")
@@ -632,9 +626,18 @@ async def invoke_artifact(
         "params": merged_params,
         "arguments": body.arguments or merged_params,
     }
-    # Use the pre-checked grant so the dispatcher can validate requires_grant
-    # without re-querying the DB. auth.grants is empty for JWT principals.
-    effective_grants = [invoke_grant] if invoke_grant else list(getattr(auth, "grants", []) or [])
+    # Load the effective grant for the dispatcher's requires_grant check.
+    # For user JWT principals, grants are not pre-loaded in the auth context.
+    # Platform server artifacts inherit read access from the all-servers collection
+    # grant seeded at first login; use the same pattern as /op/{op_name}.
+    effective_grants = list(getattr(auth, "grants", []) or [])
+    if auth.user_id and not effective_grants:
+        doc_key = doc.get("_key", artifact_id)
+        try:
+            grant = check_access(auth, doc_key, "read", arango_db)
+            effective_grants = [grant]
+        except HTTPException:
+            pass  # Dispatcher will reject with OperationForbidden if required
     dispatch_ctx = DispatchContext(
         user_id=auth.user_id,
         actor_id=auth.user_id,
@@ -864,6 +867,11 @@ async def search_artifacts(
                 root_id=hit.root_id,
                 version_id=hit.version_id,
                 collection_id=hit.collection_id,
+                title=hit.title or None,
+                description=hit.description or None,
+                content=(hit.content or "")[:500] or None,
+                tags=hit.tags or None,
+                highlights=hit.highlights,
             )
             for hit in result.hits
         ],

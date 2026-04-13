@@ -141,6 +141,11 @@ class TestSearchEndpoints:
             root_id="root-1",
             version_id="ver-1",
             collection_id=collection_id,
+            title="Test",
+            description="Test description",
+            content="Test content",
+            tags=[],
+            highlights=None,
         )
         return SimpleNamespace(
             hits=[hit],

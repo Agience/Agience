@@ -422,6 +422,8 @@ def create_workspace_artifact(
     order_key: Optional[str] = None,
     enqueue_index: bool = True,
     dispatch_handlers: bool = True,
+    slug: Optional[str] = None,
+    content_type: Optional[str] = None,
 ) -> ArtifactEntity:
     get_workspace(db, user_id, workspace_id)
 
@@ -452,6 +454,8 @@ def create_workspace_artifact(
         modified_by=user_id,
         created_time=now,
         modified_time=now,
+        slug=slug,
+        content_type=content_type,
     )
     arango.create_artifact(db, artifact)
 
@@ -552,6 +556,7 @@ def update_artifact(
     context: Optional[str] = None,
     content: Optional[str] = None,
     state: Optional[str] = None,
+    content_type: Optional[str] = None,
     reindex: bool = True,
     dispatch_handlers: bool = True,
 ) -> ArtifactEntity:
@@ -590,6 +595,9 @@ def update_artifact(
     dirty = False
     if context is not None and context != target.context:
         target.context = context
+        dirty = True
+    if content_type is not None and content_type != target.content_type:
+        target.content_type = content_type
         dirty = True
     if content is not None and content != target.content:
         # Store new content in S3; update target.context with content_key.

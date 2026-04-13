@@ -382,15 +382,14 @@ describe('McpAppHost', () => {
       expect(response).toBeDefined();
     });
 
-    it('unknown tools proxy through the MCP backend with the resourceServer', async () => {
+    it('unknown tools proxy through the artifact invoke endpoint', async () => {
       proxyToolCallMock.mockResolvedValue({
         content: [{ type: 'text', text: 'remote-result' }],
       });
       const { container } = render(
         <McpAppHost
-          artifact={makeArtifact()}
+          artifact={makeArtifact({ id: 'art-42' })}
           html=""
-          resourceServer="nexus"
         />,
       );
       const { posted, dispatchFromIframe } = wireIframe(container);
@@ -409,7 +408,7 @@ describe('McpAppHost', () => {
       expect(proxyToolCallMock).toHaveBeenCalledWith(
         'custom_tool',
         { foo: 'bar' },
-        'nexus',
+        'art-42',
         'ws-1',
       );
       const response = posted.find((p) => (p.message as { id?: number }).id === 12);

@@ -4,7 +4,105 @@
   "inherits": [
     "application/json"
   ],
-  "description": "MCP Client \u2014 connects an MCP-compatible client (VS Code, Claude Desktop, etc.) to this workspace via a scoped API key",
+  "description": "MCP Client — connects an MCP-compatible client (VS Code, Claude Desktop, etc.) to this workspace via a scoped API key",
+  "context_schema": {
+    "title": {
+      "type": "string",
+      "description": "Human-readable connection title shown on the artifact"
+    },
+    "notes": {
+      "type": "string",
+      "description": "Optional setup notes for the client connection"
+    },
+    "workspace_id": {
+      "type": "string",
+      "description": "Workspace the generated API key is scoped to"
+    },
+    "client": {
+      "type": "object",
+      "description": "Client-facing metadata used by the artifact UI",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Client label, for example VS Code Copilot or Claude Desktop"
+        },
+        "kind": {
+          "type": "string",
+          "description": "Optional client family hint for future UX"
+        }
+      }
+    },
+    "connection": {
+      "type": "object",
+      "description": "Derived MCP endpoint details displayed to the user",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "HTTP MCP endpoint URL"
+        },
+        "well_known_url": {
+          "type": "string",
+          "description": "Optional well-known MCP discovery URL"
+        },
+        "auth_header": {
+          "type": "string",
+          "description": "Header name the client should send, usually Authorization"
+        },
+        "auth_scheme": {
+          "type": "string",
+          "description": "Authentication scheme, usually Bearer"
+        }
+      }
+    },
+    "api_key": {
+      "type": "object",
+      "description": "Stored API key metadata. The raw secret is never stored on the artifact.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "API key id used for refresh, rotation, and revocation"
+        },
+        "preview": {
+          "type": "string",
+          "description": "Non-secret display hint for the one-time key that was shown to the user"
+        },
+        "is_active": {
+          "type": "boolean",
+          "description": "Whether the referenced API key is still active"
+        },
+        "scopes": {
+          "type": "array",
+          "description": "Granted scopes for the MCP client connection"
+        },
+        "resource_filters": {
+          "type": "object",
+          "description": "Resource scoping applied to the key, typically limited to one workspace"
+        },
+        "created_time": {
+          "type": "string",
+          "description": "Creation timestamp returned by the API keys service"
+        },
+        "last_used_at": {
+          "type": "string",
+          "description": "Last observed use of the key, when available"
+        }
+      }
+    },
+    "client_id": {
+      "type": "string",
+      "description": "Optional OAuth client ID for authorization code flow. Set to the artifact ID when redirect_uris are registered. Used by VS Code, Claude Desktop, and other OAuth-capable MCP clients."
+    },
+    "redirect_uris": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Optional list of allowed OAuth redirect URIs (e.g. http://127.0.0.1:33418, https://vscode.dev/redirect). Required only for OAuth authorization code flow — not needed for API key (Bearer token) access."
+    },
+    "allowed_oauth_scopes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "OAuth scopes this client is permitted to receive via the authorization code flow. Used by the token endpoint to restrict issued scopes to a safe subset (e.g. [\"read\", \"write\"]). Defaults to [\"read\"] if absent. Never grants roles, email, name, or picture — those are PII reserved for the platform client."
+    }
+  },
   "ui": {
     "label": "MCP Client",
     "icon": "plug",
@@ -23,6 +121,55 @@
     "default_state": "view",
     "is_container": false,
     "creatable": true,
-    "viewer": "mcp-client"
+    "viewer": "mcp-client",
+    "fields": [
+      {
+        "key": "name",
+        "label": "Connection name",
+        "type": "text",
+        "placeholder": "e.g. VS Code Copilot",
+        "required": true,
+        "editable": true
+      },
+      {
+        "key": "mcp_url",
+        "label": "MCP Server URL",
+        "type": "copyable",
+        "editable": false,
+        "hint": "Paste this into your MCP client as the server URL"
+      },
+      {
+        "key": "api_key",
+        "label": "API Key",
+        "type": "secret",
+        "editable": false,
+        "reveal_once": true,
+        "hint": "Shown once — copy it now. Use Rotate to generate a new key.",
+        "actions": [
+          "rotate",
+          "revoke"
+        ]
+      },
+      {
+        "key": "scopes",
+        "label": "Access",
+        "type": "readonly_list",
+        "editable": false
+      },
+      {
+        "key": "allowed_oauth_scopes",
+        "label": "OAuth allowed scopes",
+        "type": "tag_list",
+        "editable": true,
+        "hint": "Scopes this client can request via OAuth authorization code flow. Leave empty to default to [read].",
+        "placeholder": "e.g. read write"
+      },
+      {
+        "key": "last_used_at",
+        "label": "Last used",
+        "type": "timestamp",
+        "editable": false
+      }
+    ]
   }
 }

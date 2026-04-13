@@ -5,6 +5,22 @@
     "application/json"
   ],
   "description": "Agience Chat conversation artifact \u2014 stores agentic loop messages and tool call history",
+  "operations": {
+    "invoke": {
+      "enabled": true,
+      "requires_grant": "read",
+      "dispatch": {
+        "kind": "mcp_tool",
+        "server_ref": "aria",
+        "tool_ref": "$.body.name"
+      },
+      "emits": [
+        { "event": "artifact.invoke.started",   "phase": "before" },
+        { "event": "artifact.invoke.completed", "phase": "after"  },
+        { "event": "artifact.invoke.failed",    "phase": "error"  }
+      ]
+    }
+  },
   "ui": {
     "label": "Chat",
     "icon": "message-circle",

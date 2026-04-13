@@ -63,7 +63,7 @@ interface JsonRpcNotification {
 export default function McpAppHost({
   artifact,
   html,
-  resourceServer,
+  resourceServer: _resourceServer,
   csp,
   onOpenArtifact,
   onOpenCollection,
@@ -265,14 +265,14 @@ export default function McpAppHost({
       }
 
       default: {
-        // Proxy to MCP server via backend API.
-        // Routes via Identity + Server + Host — no workspace coupling required.
+        // Route through the artifact itself — POST /artifacts/{artifact.id}/invoke.
+        // The artifact's type.json declares how to dispatch (server + tool).
+        // The frontend never needs to know which server owns the tool.
         try {
-          const server = (params as { server?: string } | undefined)?.server ?? resourceServer ?? 'agience-core';
           const result = await proxyToolCall(
             toolName,
             toolArgs,
-            server,
+            artifact.id,
             activeWorkspaceId || undefined,
           );
           sendResponse(req.id, result);

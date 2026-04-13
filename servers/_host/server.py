@@ -40,6 +40,11 @@ from fastapi import FastAPI
 log = logging.getLogger("servers-host")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper(), format="%(asctime)s %(levelname)s - %(name)s - %(message)s")
 
+# Suppress noisy per-request httpx/uvicorn logs (dozens of events/emit per chat turn)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
 MCP_HOST: str = os.getenv("MCP_HOST", "0.0.0.0")
 MCP_PORT: int = int(os.getenv("MCP_PORT", "8082"))
 HOST_DIR = Path(__file__).resolve().parent

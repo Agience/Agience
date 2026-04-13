@@ -64,7 +64,7 @@ def authed_client(app, mock_db):
     app.dependency_overrides.clear()
 
 
-def _make_server_doc(key: str, slug: str) -> dict:
+def _make_server_doc(key: str, name: str) -> dict:
     """Minimal mcp-server artifact document as it comes back from ArangoDB."""
     return {
         "_key": key,
@@ -72,7 +72,7 @@ def _make_server_doc(key: str, slug: str) -> dict:
         "workspace_id": None,
         "context": {
             "content_type": "application/vnd.agience.mcp-server+json",
-            "mcp_server": {"slug": slug, "transport": "builtin"},
+            "mcp_server": {"name": name, "transport": "builtin"},
         },
     }
 
@@ -82,8 +82,8 @@ def _make_server_doc(key: str, slug: str) -> dict:
 # ---------------------------------------------------------------------------
 
 class TestSlugResolution:
-    """The op route resolves builtin server slugs to their registered artifact UUID
-    before calling _find_artifact, mirroring mcp_service.invoke_tool behaviour."""
+    """The op route resolves builtin server names to their registered artifact UUID
+    via server_registry before calling _find_artifact."""
 
     def test_slug_resolves_to_uuid_before_db_lookup(self, authed_client, mock_db):
         """When 'nexus' is passed as artifact_id, the registry resolves it
@@ -97,7 +97,7 @@ class TestSlugResolution:
         mock_db.collection.return_value = workspace_coll
 
         with (
-            patch("services.platform_topology.get_id", return_value=nexus_key),
+            patch("services.server_registry.resolve_name_to_id", return_value=nexus_key),
             patch("services.operation_dispatcher.dispatch", new=AsyncMock(return_value={"text": "hello"})),
         ):
             resp = authed_client.post(
@@ -119,7 +119,7 @@ class TestSlugResolution:
             "root_id": nexus_root_id,
             "context": {
                 "content_type": "application/vnd.agience.mcp-server+json",
-                "mcp_server": {"slug": "nexus", "transport": "builtin"},
+                "mcp_server": {"name": "nexus", "transport": "builtin"},
             },
         }
 
@@ -129,7 +129,7 @@ class TestSlugResolution:
         mock_db.aql.execute.return_value = iter([nexus_doc])
 
         with (
-            patch("services.platform_topology.get_id", return_value=nexus_root_id),
+            patch("services.server_registry.resolve_name_to_id", return_value=nexus_root_id),
             patch("services.operation_dispatcher.dispatch", new=AsyncMock(return_value={"text": "hello"})),
         ):
             resp = authed_client.post(
@@ -153,7 +153,7 @@ class TestSlugResolution:
             "root_id": nexus_root_id,
             "context": {
                 "content_type": "application/vnd.agience.mcp-server+json",
-                "mcp_server": {"slug": "nexus", "transport": "builtin"},
+                "mcp_server": {"name": "nexus", "transport": "builtin"},
             },
         }
 
@@ -179,7 +179,7 @@ class TestSlugResolution:
 
         client = TestClient(app)
         with (
-            patch("services.platform_topology.get_id", return_value=nexus_root_id),
+            patch("services.server_registry.resolve_name_to_id", return_value=nexus_root_id),
             # Patch the source module — the router does a local import
             # `from services.dependencies import check_access as _check_access`,
             # so patching routers.artifacts_router.check_access has no effect.
@@ -202,20 +202,20 @@ class TestSlugResolution:
         )
 
     def test_all_platform_slugs_use_root_id_lookup_when_version_key_differs(self, authed_client, mock_db):
-        """Every built-in server slug should dispatch when the resolved id is a
+        """Every built-in server name should dispatch when the resolved id is a
         root_id and the current artifact row has a different version _key."""
-        from services.bootstrap_types import PLATFORM_SERVER_SLUGS
+        from services import server_registry
 
-        for slug in PLATFORM_SERVER_SLUGS:
+        for name in server_registry.all_names():
             mock_db.aql.execute.reset_mock()
-            root_id = f"{slug[:4]}-root-0000-0000-0000-000000000000"
+            root_id = f"{name[:4]}-root-0000-0000-0000-000000000000"
             version_doc = {
-                "_key": f"{slug}-version-1",
-                "id": f"{slug}-version-1",
+                "_key": f"{name}-version-1",
+                "id": f"{name}-version-1",
                 "root_id": root_id,
                 "context": {
                     "content_type": "application/vnd.agience.mcp-server+json",
-                    "mcp_server": {"slug": slug, "transport": "builtin"},
+                    "mcp_server": {"name": name, "transport": "builtin"},
                 },
             }
 
@@ -225,41 +225,41 @@ class TestSlugResolution:
             mock_db.aql.execute.return_value = iter([version_doc])
 
             with (
-                patch("services.platform_topology.get_id", return_value=root_id),
+                patch("services.server_registry.resolve_name_to_id", return_value=root_id),
                 patch("services.operation_dispatcher.dispatch", new=AsyncMock(return_value={"ok": True})),
             ):
                 resp = authed_client.post(
-                    f"/artifacts/{slug}/op/resources_read",
-                    json={"uri": f"ui://{slug}/vnd.agience.mcp-server.html", "workspace_id": "ws-1"},
+                    f"/artifacts/{name}/op/resources_read",
+                    json={"uri": f"ui://{name}/vnd.agience.mcp-server.html", "workspace_id": "ws-1"},
                 )
 
             assert resp.status_code == 200
             workspace_coll.get.assert_called_with(root_id)
             mock_db.aql.execute.assert_called_once()
 
-    def test_all_platform_slugs_resolve(self, authed_client, mock_db):
-        """Every slug in PLATFORM_SERVER_SLUGS should trigger resolution."""
-        from services.bootstrap_types import PLATFORM_SERVER_SLUGS
+    def test_all_platform_names_resolve(self, authed_client, mock_db):
+        """Every server name in the manifest should trigger resolution."""
+        from services import server_registry
 
-        for slug in PLATFORM_SERVER_SLUGS:
-            test_key = f"{slug[:4]}-uuid-0000-0000-0000-000000000000"
-            doc = _make_server_doc(test_key, slug)
+        for name in server_registry.all_names():
+            test_key = f"{name[:4]}-uuid-0000-0000-0000-000000000000"
+            doc = _make_server_doc(test_key, name)
 
             workspace_coll = MagicMock()
             workspace_coll.get.side_effect = lambda key, u=test_key, d=doc: d if key == u else None
             mock_db.collection.return_value = workspace_coll
 
             with (
-                patch("services.platform_topology.get_id", return_value=test_key),
+                patch("services.server_registry.resolve_name_to_id", return_value=test_key),
                 patch("services.operation_dispatcher.dispatch", new=AsyncMock(return_value={"ok": True})),
             ):
                 authed_client.post(
-                    f"/artifacts/{slug}/op/resources_read",
+                    f"/artifacts/{name}/op/resources_read",
                     json={"uri": "ui://test/view.html"},
                 )
 
             workspace_coll.get.assert_called_with(test_key), (
-                f"Slug '{slug}' was not resolved to _key before DB lookup"
+                f"Name '{name}' was not resolved to _key before DB lookup"
             )
 
     def test_uuid_passthrough_unchanged(self, authed_client, mock_db):

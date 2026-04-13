@@ -62,14 +62,15 @@ def complete_authorizer_oauth(
     )
 
     # 3. Call Seraph's complete_authorizer_oauth tool
-    # Phase 7C — resolve the Seraph persona slug to its seeded server artifact UUID
+    # Resolve the Seraph persona name to its seeded server artifact UUID
     arango_db = next(_get_arango_db())
     try:
+        from services import server_registry
         result = mcp_service.invoke_tool(
             db=arango_db,
             user_id=user_id,
             workspace_id=None,  # Seraph is built-in, no workspace needed
-            server_artifact_id=mcp_service.resolve_builtin_server_id("seraph"),
+            server_artifact_id=server_registry.resolve_name_to_id("seraph"),
             tool_name="complete_authorizer_oauth",
             arguments={
                 "authorizer_config": authorizer_config,

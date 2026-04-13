@@ -44,9 +44,9 @@ from db.arango import (
 )
 from services.bootstrap_types import AUTHORITY_COLLECTION_SLUG
 from services.platform_topology import get_id
+from services import server_registry
 
 from core import config
-from core.config import KERNEL_SERVER_IDS  # true constant — safe as direct import
 
 logger = logging.getLogger(__name__)
 auth_router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -877,12 +877,12 @@ async def handle_client_credentials_grant(
     Servers exchange client_id + client_secret for a short-lived JWT
     carrying the full identity chain. No refresh token is issued.
 
-    Kernel servers (KERNEL_SERVER_IDS) authenticate with the shared
+    Kernel servers (server_registry.all_client_ids()) authenticate with the shared
     config.PLATFORM_INTERNAL_SECRET — no provisioned ServerCredential required.
     Third-party servers use the provisioned ServerCredential flow.
     """
     # --- Kernel servers: shared internal secret, no DB lookup ---
-    if client_id in KERNEL_SERVER_IDS:
+    if client_id in server_registry.all_client_ids():
         if not config.PLATFORM_INTERNAL_SECRET:
             return JSONResponse(
                 status_code=503,

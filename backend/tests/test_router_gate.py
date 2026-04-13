@@ -14,13 +14,15 @@ from unittest.mock import patch
 import pytest
 from httpx import AsyncClient
 
-from core.config import KERNEL_SERVER_IDS
+from services.server_registry import all_client_ids as _all_client_ids
 from services.auth_service import create_jwt_token
+
+_KERNEL_SERVER_IDS = _all_client_ids()
 
 
 def _kernel_server_token(client_id: str | None = None) -> str:
     """Mint a kernel-server JWT shaped like handle_client_credentials_grant emits."""
-    cid = client_id or sorted(KERNEL_SERVER_IDS)[0]
+    cid = client_id or sorted(_KERNEL_SERVER_IDS)[0]
     return create_jwt_token(
         {
             "sub": f"server/{cid}",
@@ -68,7 +70,7 @@ class TestAuthGuard:
 
     @pytest.mark.asyncio
     async def test_non_kernel_server_token_rejected(self, client: AsyncClient):
-        # Server token but client_id NOT in KERNEL_SERVER_IDS — third-party.
+        # Server token but client_id NOT in server_registry — third-party.
         third_party = create_jwt_token(
             {
                 "sub": "server/third-party",

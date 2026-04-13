@@ -1,10 +1,10 @@
-"""Seed first-party MCP server artifacts — Phase 7, Server Artifact Proxy.
+"""Seed first-party MCP server artifacts.
 
 Every Agience persona (Aria, Astra, Atlas, Sage, Nexus, Ophan, Seraph,
 Verso) is seeded as a `vnd.agience.mcp-server+json` artifact in the
 `agience-seeds-all-servers` collection at platform bootstrap. First-party
 servers are identified by `context.transport == "builtin"` — the MCP client
-infrastructure routes these through `BUILTIN_MCP_SERVER_PATHS` and issues a
+infrastructure routes these through `server_registry` and issues a
 delegation JWT with `aud=agience-server-{name}`.
 
 Third-party MCP servers continue to be user-registered artifacts with
@@ -39,43 +39,12 @@ from entities.artifact import Artifact as ArtifactEntity
 from services.bootstrap_types import (
     ALL_SERVERS_COLLECTION_SLUG,
     MCP_SERVER_CONTENT_TYPE,
-    PLATFORM_SERVER_SLUGS,
     SERVER_ARTIFACT_SLUG_PREFIX,
 )
 from services.platform_topology import get_id
+from services import server_registry
 
 logger = logging.getLogger(__name__)
-
-
-# Per-server display metadata. Kept inline rather than in bootstrap_types
-# because it's richer than a slug list and should not leak into Core.
-_PLATFORM_SERVERS = [
-    {"slug": "aria",   "title": "Aria",   "role": "Output & presentation",
-     "summary": "Platform-native MCP server for response formatting, chat turns, and UI resource serving."},
-    {"slug": "astra",  "title": "Astra",  "role": "Ingestion & streaming",
-     "summary": "Platform-native MCP server for file ingestion, validation, indexing, and live streaming."},
-    {"slug": "atlas",  "title": "Atlas",  "role": "Governance & coherence",
-     "summary": "Platform-native MCP server for decision logging, constraint tracking, and provenance."},
-    {"slug": "sage",   "title": "Sage",   "role": "Research & retrieval",
-     "summary": "Platform-native MCP server for grounded Q&A, evidence synthesis, and retrieval."},
-    {"slug": "nexus",  "title": "Nexus",  "role": "Routing & communication",
-     "summary": "Platform-native MCP server for message routing, comms planes, and connectivity."},
-    {"slug": "ophan",  "title": "Ophan",  "role": "Finance & licensing",
-     "summary": "Platform-native MCP server for accounting, licensing, and billing telemetry."},
-    {"slug": "seraph", "title": "Seraph", "role": "Security & trust",
-     "summary": "Platform-native MCP server for guardrails, policy enforcement, credentials, and trust."},
-    {"slug": "verso",  "title": "Verso",  "role": "Reasoning & transforms",
-     "summary": "Platform-native MCP server for synthesis, workflow automation, and transformation."},
-]
-
-# Sanity check at import time — keeps PLATFORM_SERVER_SLUGS and _PLATFORM_SERVERS aligned.
-_SEEDED_SLUGS = {s["slug"] for s in _PLATFORM_SERVERS}
-assert _SEEDED_SLUGS == set(PLATFORM_SERVER_SLUGS), (
-    f"servers_content_service._PLATFORM_SERVERS is out of sync with "
-    f"bootstrap_types.PLATFORM_SERVER_SLUGS: "
-    f"missing={set(PLATFORM_SERVER_SLUGS) - _SEEDED_SLUGS}, "
-    f"extra={_SEEDED_SLUGS - set(PLATFORM_SERVER_SLUGS)}"
-)
 
 
 def ensure_platform_servers(arango_db: StandardDatabase) -> Optional[str]:
@@ -88,16 +57,16 @@ def ensure_platform_servers(arango_db: StandardDatabase) -> Optional[str]:
     if not collection_id:
         return None
 
-    for server in _PLATFORM_SERVERS:
-        artifact_slug = f"{SERVER_ARTIFACT_SLUG_PREFIX}{server['slug']}"
+    for entry in server_registry.all_entries():
+        artifact_slug = f"{SERVER_ARTIFACT_SLUG_PREFIX}{entry.name}"
         root_id = get_id(artifact_slug)
         _ensure_server_artifact_linked(
             arango_db,
             collection_id=collection_id,
             root_id=root_id,
             slug=artifact_slug,
-            context=_build_server_context(server),
-            content=_build_server_content(server),
+            context=_build_server_context(entry),
+            content=_build_server_content(entry),
             content_type=MCP_SERVER_CONTENT_TYPE,
         )
     return collection_id
@@ -232,40 +201,39 @@ def _ensure_server_artifact_linked(
         return False
 
 
-def _build_server_context(server: dict) -> str:
+def _build_server_context(entry) -> str:
     """Build the artifact context for a first-party MCP server record.
 
     Key invariants:
     - `content_type` is always `MCP_SERVER_CONTENT_TYPE` so the dispatcher resolves
       `operations.invoke` via the type registry.
     - `transport: "builtin"` is the resolver signal — `mcp_service` routes
-      these through `BUILTIN_MCP_SERVER_PATHS` without requiring a URL.
-    - `client_id` matches the `KERNEL_SERVER_IDS` fast-path in
+      these through `server_registry` without requiring a URL.
+    - `client_id` matches the `server_registry.all_client_ids()` fast-path in
       `auth_router.handle_client_credentials_grant` so delegation JWTs are
       issued with `aud=agience-server-{name}`.
-    - `slug` is echoed into context so clients can identify the persona
+    - `name` is echoed into context so clients can identify the persona
       without consulting the slug registry.
     """
-    slug = server["slug"]
     context = {
         "type": "mcp-server",
         "content_type": MCP_SERVER_CONTENT_TYPE,
-        "title": server["title"],
-        "description": server["summary"],
+        "title": entry.title,
+        "description": entry.summary,
         "mcp_server": {
             "version": 1,
             "kind": "platform-builtin",
-            "slug": slug,
-            "role": server["role"],
-            "client_id": f"{SERVER_ARTIFACT_SLUG_PREFIX}{slug}",
+            "name": entry.name,
+            "role": entry.role,
+            "client_id": entry.client_id,
             "transport": "builtin",
         },
     }
     return json.dumps(context, separators=(",", ":"), ensure_ascii=False)
 
 
-def _build_server_content(server: dict) -> str:
+def _build_server_content(entry) -> str:
     return (
-        f"{server['title']} — {server['role']}. "
-        f"{server['summary']}"
+        f"{entry.title} — {entry.role}. "
+        f"{entry.summary}"
     )

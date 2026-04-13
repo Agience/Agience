@@ -41,9 +41,9 @@ function useContainerMcpData() {
   const { activeWorkspaceId } = useWorkspaces();
   const [infos, setInfos] = useState<Record<string, MCPServerInfo>>({});
 
-  // Derive server configs from live info (label defaults to server ID)
+  // Derive server configs from live info
   const servers: MCPServerConfig[] = useMemo(
-    () => Object.entries(infos).map(([id, info]) => ({ id, label: id, icon: info.icon })),
+    () => Object.entries(infos).map(([id, info]) => ({ id, label: info.name || id, icon: info.icon })),
     [infos]
   );
 

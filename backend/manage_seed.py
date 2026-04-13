@@ -242,6 +242,8 @@ def main():
     db = connect()
     platform_settings.load_all(db)
     pre_resolve_platform_ids(db)
+    from services import server_registry
+    server_registry.populate_ids()
 
     if args.action == "seed":
         action_seed(db, args.dry_run)

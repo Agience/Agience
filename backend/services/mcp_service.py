@@ -12,12 +12,10 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from typing import Dict, List, Optional
-from urllib.parse import urlsplit, urlunsplit
 
 from mcp_client.adapter import fetch_server_info
-from mcp_client.contracts import MCPServerInfo, MCPServerConfig, MCPServerTransport
+from mcp_client.contracts import MCPServerInfo, MCPServerConfig
 from mcp_client.local import create_agience_core_client
 
 from arango.database import StandardDatabase
@@ -25,8 +23,8 @@ from arango.database import StandardDatabase
 from . import collection_service as col_svc
 from . import desktop_host_relay_service
 from . import auth_service
+from . import server_registry
 from db import arango as arango_db_module
-from core.config import BUILTIN_MCP_SERVER_PATHS
 from db.arango import (
     get_active_collection_ids_for_user as db_get_active_collection_ids,
     list_collection_artifacts as _db_list_collection_artifacts,
@@ -45,11 +43,8 @@ def _dict_to_ns(d: dict):
 # Type-registry-driven config parsing (C2 residual resolution)
 #
 # Core MUST NOT parse `vnd.agience.mcp-server+json` artifact.context directly.
-# The parser is declared by the type definition itself (see
-# `servers/nexus/ui/application/vnd.agience.mcp-server+json/type.json` →
-# `handlers.mcp_server_config`) and resolved at runtime through the type
-# registry. This keeps Core type-blind per P2 (Handler Owns Its Schema):
-# Core asks "what parses this content type?" and invokes whatever the type declares.
+# The parser is declared by the type definition itself and resolved at runtime
+# through the type registry. This keeps Core type-blind per P2.
 # ---------------------------------------------------------------------------
 
 
@@ -120,89 +115,6 @@ class AuthExpiredError(Exception):
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _derive_servers_host_uri() -> str:
-    explicit = (os.getenv("AGIENCE_SERVER_HOST_URI") or "").strip()
-    if explicit:
-        return explicit.rstrip("/")
-
-    from core import config
-
-    try:
-        parsed = urlsplit(config.BACKEND_URI)
-        scheme = parsed.scheme or "http"
-        hostname = parsed.hostname or "localhost"
-        netloc = f"{hostname}:8082"
-        return urlunsplit((scheme, netloc, "", "", "")).rstrip("/")
-    except Exception:
-        return "http://localhost:8082"
-
-
-def _get_builtin_http_server_config(server_id: str) -> Optional[MCPServerConfig]:
-    path = BUILTIN_MCP_SERVER_PATHS.get(server_id)
-    if not path:
-        return None
-
-    base_uri = _derive_servers_host_uri()
-    return MCPServerConfig(
-        id=server_id,
-        label=server_id.title(),
-        transport=MCPServerTransport(type="http", well_known=f"{base_uri}{path}"),
-        notes="Built-in Agience persona server.",
-    )
-
-
-# ---------------------------------------------------------------------------
-# Builtin server slug → UUID resolution
-#
-# First-party MCP servers are seeded as `vnd.agience.mcp-server+json`
-# artifacts at platform bootstrap (see `services/servers_content_service.py`).
-# Each artifact gets a stable UUID registered under the slug
-# `agience-server-{name}` in `platform_topology`.
-# ---------------------------------------------------------------------------
-
-
-def resolve_builtin_server_id(slug: str) -> str:
-    """Return the seeded artifact UUID for a built-in persona slug.
-
-    Raises ValueError if the topology registry has not been populated or the
-    slug is not registered — callers must ensure bootstrap has completed.
-    """
-    if not slug:
-        return slug
-    from services.bootstrap_types import SERVER_ARTIFACT_SLUG_PREFIX
-    from services.platform_topology import get_id_optional
-
-    artifact_uuid = get_id_optional(f"{SERVER_ARTIFACT_SLUG_PREFIX}{slug}")
-    if not artifact_uuid:
-        raise ValueError(
-            f"Builtin server '{slug}' is not registered in platform topology. "
-            "Ensure platform bootstrap has completed before calling this function."
-        )
-    return artifact_uuid
-
-
-def _lookup_builtin_slug_for_artifact_id(artifact_id: str) -> Optional[str]:
-    """Reverse lookup: if `artifact_id` is the root_id of a seeded built-in
-    server artifact, return its persona slug. Otherwise return None.
-
-    Lets `invoke_tool` and `read_resource` accept either the slug or the
-    root_id and route through the same builtin HTTP path.  Version _keys
-    must NOT be passed here — dispatch callers should extract root_id instead.
-    """
-    if not artifact_id or "/" in artifact_id or "-" not in artifact_id:
-        return None
-    from services.bootstrap_types import (
-        PLATFORM_SERVER_SLUGS,
-        SERVER_ARTIFACT_SLUG_PREFIX,
-    )
-    from services.platform_topology import get_id_optional
-
-    for slug in PLATFORM_SERVER_SLUGS:
-        registered = get_id_optional(f"{SERVER_ARTIFACT_SLUG_PREFIX}{slug}")
-        if registered and registered == artifact_id:
-            return slug
-    return None
-
 def _get_server_config(
     db: StandardDatabase,
     user_id: str,
@@ -213,7 +125,7 @@ def _get_server_config(
 
     Resolution order:
       1. ``agience-core`` -- returns None (caller handles built-in locally).
-      2. Built-in persona alias (atlas, aria, ...) -- config from BUILTIN_MCP_SERVER_PATHS.
+      2. Manifest-registered builtin -- config from ``server_registry``.
       3. Workspace artifact -- if *workspace_id* is provided, looks up the artifact
          in that workspace (ArangoDB).
       4. Collection artifact -- resolves globally via ownership or grants (ArangoDB).
@@ -223,9 +135,11 @@ def _get_server_config(
     if server_id == "agience-core":
         return None  # caller handles built-in separately
 
-    builtin_config = _get_builtin_http_server_config(server_id)
-    if builtin_config is not None:
-        return builtin_config
+    # Check manifest builtins — by name or by bootstrap UUID.
+    if server_registry.get_entry(server_id) is not None:
+        return server_registry.build_http_config(server_id)
+    if server_registry.is_builtin_id(server_id):
+        return server_registry.build_http_config_by_id(server_id)
 
     # Try workspace artifact first (if workspace context is available)
     if workspace_id:
@@ -442,6 +356,7 @@ def list_servers_for_workspace(db: StandardDatabase, user_id: str, workspace_id:
         try:
             servers.append(MCPServerInfo(
                 server="agience-core",
+                name="Agience Core",
                 tools=client.list_tools(),
                 resources=client.list_resources(),
                 prompts=client.list_prompts(),
@@ -452,6 +367,7 @@ def list_servers_for_workspace(db: StandardDatabase, user_id: str, workspace_id:
     except Exception as e:
         servers.append(MCPServerInfo(
             server="agience-core",
+            name="Agience Core",
             status="error",
             message=f"Failed to load Agience Core: {e}",
         ))
@@ -460,6 +376,7 @@ def list_servers_for_workspace(db: StandardDatabase, user_id: str, workspace_id:
     if desktop_host is not None:
         servers.append(MCPServerInfo(
             server="desktop-host",
+            name=desktop_host.get("display_name") or desktop_host.get("device_id") or "Desktop Host",
             tools=desktop_host_relay_service.get_desktop_host_tools(),
             status="ok",
             message=desktop_host.get("display_name") or desktop_host.get("device_id") or "Connected",
@@ -511,6 +428,7 @@ def list_all_servers_for_user(db: StandardDatabase, user_id: str) -> List[MCPSer
         try:
             servers.append(MCPServerInfo(
                 server="agience-core",
+                name="Agience Core",
                 tools=client.list_tools(),
                 resources=client.list_resources(),
                 prompts=client.list_prompts(),
@@ -521,6 +439,7 @@ def list_all_servers_for_user(db: StandardDatabase, user_id: str) -> List[MCPSer
     except Exception as e:
         servers.append(MCPServerInfo(
             server="agience-core",
+            name="Agience Core",
             status="error",
             message=f"Failed to load Agience Core: {e}",
         ))
@@ -530,6 +449,7 @@ def list_all_servers_for_user(db: StandardDatabase, user_id: str) -> List[MCPSer
     if desktop_host is not None:
         servers.append(MCPServerInfo(
             server="desktop-host",
+            name=desktop_host.get("display_name") or desktop_host.get("device_id") or "Desktop Host",
             tools=desktop_host_relay_service.get_desktop_host_tools(),
             status="ok",
             message=desktop_host.get("display_name") or desktop_host.get("device_id") or "Connected",
@@ -537,14 +457,14 @@ def list_all_servers_for_user(db: StandardDatabase, user_id: str) -> List[MCPSer
         servers.extend(desktop_host_relay_service.get_local_mcp_server_infos(user_id))
 
     # Built-in persona servers
-    for sid in BUILTIN_MCP_SERVER_PATHS:
-        config = _get_builtin_http_server_config(sid)
-        if config:
-            try:
-                info = fetch_server_info(config)
-                servers.append(info)
-            except Exception as e:
-                servers.append(MCPServerInfo(server=sid, status="error", message=str(e)))
+    for entry in server_registry.all_entries():
+        try:
+            config = server_registry.build_http_config(entry.name)
+            info = fetch_server_info(config)
+            servers.append(info)
+        except Exception as e:
+            server_id = server_registry.get_id(entry.name) or entry.name
+            servers.append(MCPServerInfo(server=server_id, name=entry.title, status="error", message=str(e)))
 
     # Collection-committed servers
     try:
@@ -690,7 +610,7 @@ def invoke_tool(
 
     Routes based on Identity + Server + Host:
       - Identity: *user_id* (from JWT/API key)
-      - Server: *server_artifact_id* -- built-in alias or artifact UUID
+      - Server: *server_artifact_id* -- server name, bootstrap UUID, or artifact UUID
       - Host: resolved from server config (local, HTTP, desktop relay)
 
     For built-in persona servers a delegation JWT is issued (RFC 8693 style:
@@ -701,14 +621,6 @@ def invoke_tool(
     Raises :class:`ValueError` if the server cannot be resolved.
     """
     from mcp_client.adapter import create_client
-
-    # Phase 7C — UUID-to-slug normalization. If the caller passed a seeded
-    # built-in server's artifact UUID, resolve it back to the persona slug so
-    # the existing builtin dispatch chain handles it. UUIDs that are NOT
-    # registered builtins fall through unchanged for the artifact lookup path.
-    builtin_slug = _lookup_builtin_slug_for_artifact_id(server_artifact_id)
-    if builtin_slug is not None:
-        server_artifact_id = builtin_slug
 
     if server_artifact_id == "agience-core":
         client = create_agience_core_client(db, db, user_id)
@@ -726,17 +638,16 @@ def invoke_tool(
             arguments=arguments,
         )
 
-    # Check built-in persona aliases first (no artifact lookup needed).
-    # Inject the user token at the transport layer (Authorization header) so the
-    # persona server receives user identity at the protocol level — same mechanism
-    # as third-party servers that have auth resolved via _resolve_auth_headers.
-    builtin_config = _get_builtin_http_server_config(server_artifact_id)
-    if builtin_config is not None:
+    # Check manifest-registered builtins — accepts name or bootstrap UUID.
+    builtin_entry = server_registry.get_entry(server_artifact_id)
+    if builtin_entry is None:
+        name = server_registry.get_name_by_id(server_artifact_id)
+        if name is not None:
+            builtin_entry = server_registry.get_entry(name)
+    if builtin_entry is not None:
+        builtin_config = server_registry.build_http_config(builtin_entry.name)
         if user_id:
-            # Issue a delegation JWT (RFC 8693): sub=user, act.sub=server.
-            # Injected as the Authorization transport header — never as a tool argument.
-            server_client_id = f"agience-server-{server_artifact_id}"
-            delegation = auth_service.issue_delegation_token(server_client_id, user_id)
+            delegation = auth_service.issue_delegation_token(builtin_entry.client_id, user_id)
             builtin_config.runtime_headers = {"Authorization": f"Bearer {delegation}"}
         client = create_client(builtin_config)
         try:
@@ -785,11 +696,6 @@ def read_resource(
     resolution details.
     """
     from mcp_client.adapter import create_client
-
-    # Phase 7C — UUID-to-slug normalization (mirrors invoke_tool).
-    builtin_slug = _lookup_builtin_slug_for_artifact_id(server_artifact_id)
-    if builtin_slug is not None:
-        server_artifact_id = builtin_slug
 
     if server_artifact_id == "agience-core":
         client = create_agience_core_client(db, db, user_id)

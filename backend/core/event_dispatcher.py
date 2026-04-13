@@ -43,6 +43,7 @@ from typing import Any, Dict, Iterable, Optional
 from arango.database import StandardDatabase
 
 from services import mcp_service
+from services import server_registry
 from services import types_service
 from core.dependencies import get_arango_db as _get_arango_db
 
@@ -133,10 +134,10 @@ def _dispatch_contract_event(
     if not isinstance(target_server, str) or not target_server.strip():
         target_server = "agience-core"
 
-    # Phase 7C — resolve builtin slugs to seeded server artifact UUIDs.
+    # Resolve builtin server names to seeded server artifact UUIDs.
     # `agience-core`, `desktop-host`, and `local-mcp:*` are passed through.
     if target_server not in ("agience-core", "desktop-host") and not target_server.startswith("local-mcp:"):
-        target_server = mcp_service.resolve_builtin_server_id(target_server)
+        target_server = server_registry.resolve_name_to_id(target_server)
 
     mcp_service.invoke_tool(
         db=db,
@@ -347,9 +348,9 @@ def _invoke_transform(
         logger.warning("Transform %s has no server configured", transform_artifact_id)
         return
 
-    # Phase 7C — resolve builtin slugs to seeded server artifact UUIDs.
+    # Resolve builtin server names to seeded server artifact UUIDs.
     if server not in ("agience-core", "desktop-host") and not server.startswith("local-mcp:"):
-        server = mcp_service.resolve_builtin_server_id(server)
+        server = server_registry.resolve_name_to_id(server)
 
     try:
         mcp_service.invoke_tool(
@@ -422,11 +423,11 @@ def _execute_action(
 
     server, tool = server_tool
 
-    # Phase 7C — _OPERATOR_TO_SERVER lookup yields a persona slug; resolve to
+    # _OPERATOR_TO_SERVER lookup yields a persona name; resolve to
     # the seeded server artifact UUID so mcp_service.invoke_tool dispatches
     # via the artifact-native path.
     if server not in ("agience-core", "desktop-host") and not server.startswith("local-mcp:"):
-        server = mcp_service.resolve_builtin_server_id(server)
+        server = server_registry.resolve_name_to_id(server)
 
     # Build params with injected variables
     raw_params = action.get("operator_params") or {}

@@ -96,8 +96,8 @@ export default function ContextPanel() {
             <div className="text-[11px] font-semibold text-gray-600">Selected MCP resources</div>
             <div className="mt-1 max-h-20 overflow-auto rounded bg-white border px-2 py-1 text-[11px] text-gray-700">
               {state.panelData.resources.resources.map((r) => (
-                <div key={`${r.server}::${r.uri}`} className="truncate" title={`${r.server} • ${r.uri}`}>
-                  {r.server} • {r.uri}
+                <div key={`${r.server}::${r.uri}`} className="truncate" title={`${r.serverName || r.server} • ${r.uri}`}>
+                  {r.serverName || r.server} • {r.uri}
                 </div>
               ))}
             </div>

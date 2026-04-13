@@ -30,6 +30,7 @@ export interface ResourcesPanelData {
   artifacts: Artifact[];
   resources: Array<{
     server: string;
+    serverName?: string;
     uri: string;
     title?: string;
     contentType?: string;

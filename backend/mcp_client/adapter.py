@@ -201,7 +201,7 @@ class HTTPMCPClient(MCPClient):
         # MCP Streamable HTTP requires Accept to include both JSON and SSE
         headers.setdefault("Accept", "application/json, text/event-stream")
         self.client = httpx.Client(
-            timeout=httpx.Timeout(30.0, connect=5.0),
+            timeout=httpx.Timeout(120.0, connect=5.0),
             headers=headers,
         )
         self.base_url: Optional[str] = None
@@ -444,6 +444,7 @@ def fetch_server_info(config: MCPServerConfig) -> MCPServerInfo:
             
             return MCPServerInfo(
                 server=config.id,
+                name=config.label,
                 tools=tools,
                 resources=resources,
                 prompts=prompts,
@@ -455,6 +456,7 @@ def fetch_server_info(config: MCPServerConfig) -> MCPServerInfo:
         logger.error(f"Failed to fetch server info for {config.id}: {e}")
         return MCPServerInfo(
             server=config.id,
+            name=config.label,
             tools=[],
             resources=[],
             status="error",

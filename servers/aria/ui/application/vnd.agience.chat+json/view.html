@@ -286,7 +286,9 @@ async function sendTurn(messages) {
 
   try {
     const c = ctx();
-    const workspaceId = (c.chat && c.chat.workspace_id) || undefined;
+    // Prefer context-embedded workspace_id; fall back to host-provided workspaceId
+    // so picker-created chats (no context yet) still get workspace-scoped deltas.
+    const workspaceId = (c.chat && c.chat.workspace_id) || (_hostCtx.agience && _hostCtx.agience.workspaceId) || undefined;
     const chatArtifactId = _artifactData ? _artifactData.artifact_id : undefined;
     const result = await sendRpc('tools/call', {
       name: 'run_chat_turn',
@@ -449,10 +451,12 @@ function render() {
   const input = document.getElementById('chat-input');
   if (input && !_loading) input.focus();
 
-  // Auto-send on first mount if last message is from user
+  // Auto-send only once per card load: exactly one pending user message with no
+  // prior assistant response (the Ask Anything flow). Guarded by _autoSent so
+  // subsequent render() calls never re-trigger.
   if (!_autoSent) {
     _autoSent = true;
-    if (_messages.length > 0 && _messages[_messages.length - 1].role === 'user') {
+    if (_messages.length === 1 && _messages[0].role === 'user') {
       sendTurn(_messages);
     }
   }

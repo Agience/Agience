@@ -1,0 +1,66 @@
+[
+  {
+    "name": "aria",
+    "title": "Aria",
+    "path": "/aria/mcp",
+    "client_id": "agience-server-aria",
+    "role": "Output & presentation",
+    "summary": "Platform-native MCP server for response formatting, chat turns, and UI resource serving."
+  },
+  {
+    "name": "astra",
+    "title": "Astra",
+    "path": "/astra/mcp",
+    "client_id": "agience-server-astra",
+    "role": "Ingestion & streaming",
+    "summary": "Platform-native MCP server for file ingestion, validation, indexing, and live streaming."
+  },
+  {
+    "name": "atlas",
+    "title": "Atlas",
+    "path": "/atlas/mcp",
+    "client_id": "agience-server-atlas",
+    "role": "Governance & coherence",
+    "summary": "Platform-native MCP server for decision logging, constraint tracking, and provenance."
+  },
+  {
+    "name": "sage",
+    "title": "Sage",
+    "path": "/sage/mcp",
+    "client_id": "agience-server-sage",
+    "role": "Research & retrieval",
+    "summary": "Platform-native MCP server for grounded Q&A, evidence synthesis, and retrieval."
+  },
+  {
+    "name": "nexus",
+    "title": "Nexus",
+    "path": "/nexus/mcp",
+    "client_id": "agience-server-nexus",
+    "role": "Routing & communication",
+    "summary": "Platform-native MCP server for message routing, comms planes, and connectivity."
+  },
+  {
+    "name": "ophan",
+    "title": "Ophan",
+    "path": "/ophan/mcp",
+    "client_id": "agience-server-ophan",
+    "role": "Finance & licensing",
+    "summary": "Platform-native MCP server for accounting, licensing, and billing telemetry."
+  },
+  {
+    "name": "seraph",
+    "title": "Seraph",
+    "path": "/seraph/mcp",
+    "client_id": "agience-server-seraph",
+    "role": "Security & trust",
+    "summary": "Platform-native MCP server for guardrails, policy enforcement, credentials, and trust."
+  },
+  {
+    "name": "verso",
+    "title": "Verso",
+    "path": "/verso/mcp",
+    "client_id": "agience-server-verso",
+    "role": "Reasoning & transforms",
+    "summary": "Platform-native MCP server for synthesis, workflow automation, and transformation."
+  }
+]

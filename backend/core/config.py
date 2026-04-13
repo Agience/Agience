@@ -48,22 +48,6 @@ KEYS_DIR = Path(os.getenv("KEYS_DIR", str(BASE_DIR / ".data" / "keys")))
 # Platform identity — deterministic UUID, never changes.
 AGIENCE_PLATFORM_USER_ID = str(_uuid.uuid5(_uuid.NAMESPACE_URL, "agience://platform"))
 
-# Built-in first-party MCP server persona paths.
-BUILTIN_MCP_SERVER_PATHS = {
-    "aria": "/aria/mcp",
-    "astra": "/astra/mcp",
-    "atlas": "/atlas/mcp",
-    "sage": "/sage/mcp",
-    "nexus": "/nexus/mcp",
-    "ophan": "/ophan/mcp",
-    "seraph": "/seraph/mcp",
-    "verso": "/verso/mcp",
-}
-
-KERNEL_SERVER_IDS: frozenset = frozenset(
-    f"agience-server-{name}" for name in BUILTIN_MCP_SERVER_PATHS
-)
-
 
 # ---------------------------------------------------------------------------
 #  Phase 1: DB-backed variables — initialized to safe defaults.

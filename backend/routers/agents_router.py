@@ -58,14 +58,15 @@ async def invoke_named_operator(
         server_tool = resolve_operator_server(operator_name)
         if server_tool:
             from services import mcp_service
+            from services import server_registry
 
             server, tool = server_tool
-            # Phase 7C — _OPERATOR_TO_SERVER yields a persona slug; resolve
-            # to the seeded vnd.agience.mcp-server+json artifact UUID so
+            # _OPERATOR_TO_SERVER yields a persona name; resolve to the
+            # seeded vnd.agience.mcp-server+json artifact UUID so
             # mcp_service.invoke_tool dispatches via the artifact-native
             # path. Special-cased dispatch tokens are passed through.
             if server not in ("agience-core", "desktop-host") and not server.startswith("local-mcp:"):
-                server = mcp_service.resolve_builtin_server_id(server)
+                server = server_registry.resolve_name_to_id(server)
             try:
                 result = mcp_service.invoke_tool(
                     db=arango_db,

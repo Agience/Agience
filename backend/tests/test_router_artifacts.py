@@ -221,10 +221,7 @@ class TestCreateArtifact:
             state=ArtifactEntity.STATE_DRAFT,
         )
         try:
-            with (
-                patch("db.arango.create_artifact", return_value=created),
-                patch("db.arango.add_artifact_to_collection"),
-            ):
+            with patch("services.workspace_service.create_workspace_artifact", return_value=created):
                 r = await client.post(
                     "/artifacts",
                     json={
@@ -253,15 +250,20 @@ class TestCreateArtifact:
         app.dependency_overrides[get_arango_db] = lambda: arango
         captured: dict = {}
 
-        def fake_create(db, entity):
-            captured["entity"] = entity
+        def fake_create(**kwargs):
+            entity = ArtifactEntity(
+                id="art-merge",
+                root_id="art-merge",
+                collection_id=kwargs.get("workspace_id", "container-1"),
+                context=kwargs.get("context", "{}"),
+                content=kwargs.get("content", ""),
+                state=ArtifactEntity.STATE_DRAFT,
+            )
+            captured["context"] = kwargs.get("context", "")
             return entity
 
         try:
-            with (
-                patch("db.arango.create_artifact", side_effect=fake_create),
-                patch("db.arango.add_artifact_to_collection"),
-            ):
+            with patch("services.workspace_service.create_workspace_artifact", side_effect=fake_create):
                 await client.post(
                     "/artifacts",
                     json={
@@ -274,7 +276,7 @@ class TestCreateArtifact:
         finally:
             app.dependency_overrides.pop(get_arango_db, None)
 
-        ctx = captured["entity"].context
+        ctx = captured["context"]
         assert '"content_type": "text/plain"' in ctx or "content_type" in ctx
         assert "existing" in ctx
 
@@ -1374,6 +1376,11 @@ class TestSearchArtifacts:
                     version_id="v-1",
                     workspace_id="ws-1",
                     collection_id=None,
+                    title="Test Artifact",
+                    description="A test artifact",
+                    content="Some content here",
+                    tags=["test"],
+                    highlights=None,
                 ),
             ],
             total=1,

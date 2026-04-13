@@ -5,7 +5,9 @@ from httpx import AsyncClient
 from fastapi.responses import RedirectResponse
 
 import core.key_manager as _km
-from core.config import KERNEL_SERVER_IDS
+from services.server_registry import all_client_ids
+
+_KERNEL_SERVER_IDS = all_client_ids()
 
 
 def _google_registry():
@@ -220,7 +222,7 @@ async def test_jwks_endpoint_returns_public_key(_, client: AsyncClient):
 # ---------------------------------------------------------------------------
 # Kernel server client_credentials short-circuit
 #
-# Servers in core.config.KERNEL_SERVER_IDS authenticate with the shared
+# Servers in server_registry.all_client_ids() authenticate with the shared
 # PLATFORM_INTERNAL_SECRET and never touch the ServerCredential table. These
 # tests lock down the fast-path against secret-mismatch, missing-secret, and
 # DB-bypass regressions, and verify the issued JWT carries the right shape.
@@ -233,7 +235,7 @@ def _decode(token: str) -> dict:
 @pytest.mark.asyncio
 @patch("core.config.PLATFORM_INTERNAL_SECRET", "shared-secret")
 async def test_kernel_client_credentials_success(client: AsyncClient):
-    client_id = sorted(KERNEL_SERVER_IDS)[0]
+    client_id = sorted(_KERNEL_SERVER_IDS)[0]
     resp = await client.post(
         "/auth/token",
         data={
@@ -258,7 +260,7 @@ async def test_kernel_client_credentials_success(client: AsyncClient):
 @pytest.mark.asyncio
 @patch("core.config.PLATFORM_INTERNAL_SECRET", "shared-secret")
 async def test_kernel_client_credentials_wrong_secret(client: AsyncClient):
-    client_id = sorted(KERNEL_SERVER_IDS)[0]
+    client_id = sorted(_KERNEL_SERVER_IDS)[0]
     resp = await client.post(
         "/auth/token",
         data={
@@ -274,7 +276,7 @@ async def test_kernel_client_credentials_wrong_secret(client: AsyncClient):
 @pytest.mark.asyncio
 @patch("core.config.PLATFORM_INTERNAL_SECRET", "")
 async def test_kernel_client_credentials_unconfigured_returns_503(client: AsyncClient):
-    client_id = sorted(KERNEL_SERVER_IDS)[0]
+    client_id = sorted(_KERNEL_SERVER_IDS)[0]
     resp = await client.post(
         "/auth/token",
         data={
@@ -294,7 +296,7 @@ async def test_kernel_client_credentials_does_not_query_db(client: AsyncClient):
     If they did, the kernel fast-path would be defeated and seeded ServerCredentials
     would be required for every persona — which is exactly what the kernel path exists
     to avoid. Patching the DB lookup to raise lets us assert it was never called."""
-    client_id = sorted(KERNEL_SERVER_IDS)[0]
+    client_id = sorted(_KERNEL_SERVER_IDS)[0]
     with patch(
         "routers.auth_router.db_get_server_credential",
         side_effect=AssertionError("kernel path must not hit the DB"),
@@ -311,11 +313,11 @@ async def test_kernel_client_credentials_does_not_query_db(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("client_id", sorted(KERNEL_SERVER_IDS))
+@pytest.mark.parametrize("client_id", sorted(_KERNEL_SERVER_IDS))
 @patch("core.config.PLATFORM_INTERNAL_SECRET", "shared-secret")
 async def test_every_kernel_server_id_can_obtain_a_token(client_id, client: AsyncClient):
     """Each persona's client_id must mint a valid kernel JWT. If a server is added to
-    KERNEL_SERVER_IDS this test will pick it up automatically."""
+    the manifest this test will pick it up automatically."""
     resp = await client.post(
         "/auth/token",
         data={

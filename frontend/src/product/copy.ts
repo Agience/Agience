@@ -13,8 +13,8 @@ export type ProductNoun = {
 };
 
 export const PRODUCT_NOUN: ProductNoun = {
-  singular: 'Note',
-  plural: 'Notes',
+  singular: 'Artifact',
+  plural: 'Artifacts',
 } as const;
 
 export function noun(count: number): string {

@@ -72,7 +72,21 @@ class _MCPClosedResourceFilter(logging.Filter):
         return True
 
 
+class _EventsEmitAccessFilter(logging.Filter):
+    """Suppress POST /events/emit from uvicorn access log.
+
+    Chat streaming emits dozens of delta events per turn; logging every one
+    drowns out useful access log entries.
+    """
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        if "POST /events/emit" in msg:
+            return False
+        return True
+
+
 logging.getLogger("mcp.server.streamable_http").addFilter(_MCPClosedResourceFilter())
+logging.getLogger("uvicorn.access").addFilter(_EventsEmitAccessFilter())
 logging.getLogger("urllib3").setLevel(logging.ERROR)
 logging.getLogger("openai._base_client").setLevel(logging.ERROR)
 logging.getLogger("httpx._client").setLevel(logging.ERROR)
@@ -121,6 +135,8 @@ def _run_phase4_core_sync(loop) -> None:
     try:
         from services.platform_topology import pre_resolve_platform_ids
         pre_resolve_platform_ids(arango_db)
+        from services import server_registry
+        server_registry.populate_ids()
     except Exception:
         logger.exception("Platform ID pre-resolution failed at startup (fatal)")
         raise
@@ -444,6 +460,8 @@ async def lifespan(app: FastAPI):
     try:
         from services.platform_topology import pre_resolve_platform_ids
         pre_resolve_platform_ids(arango_db)
+        from services import server_registry
+        server_registry.populate_ids()
     except Exception:
         logger.exception("Platform ID pre-resolution failed at startup (fatal)")
         raise

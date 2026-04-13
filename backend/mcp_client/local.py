@@ -576,12 +576,13 @@ class AgienceCoreLocalMCP:
             tool_args["model"] = model.strip()
 
         try:
-            # Phase 7C — pass the seeded Aria artifact UUID, not the bare slug.
+            # Pass the seeded Aria artifact UUID, not the bare name.
+            from services import server_registry
             return mcp_service.invoke_tool(
                 db=self.arango_db,
                 user_id=self.user_id,
                 workspace_id=workspace_id,
-                server_artifact_id=mcp_service.resolve_builtin_server_id("aria"),
+                server_artifact_id=server_registry.resolve_name_to_id("aria"),
                 tool_name="extract_units",
                 arguments=tool_args,
             )

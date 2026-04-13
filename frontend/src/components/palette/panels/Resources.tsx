@@ -17,7 +17,7 @@ export default function ResourcesPanel() {
 
   const [dragDepth, setDragDepth] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [resources, setResources] = useState<Array<{ server: string; resource: MCPResource }>>([]);
+  const [resources, setResources] = useState<Array<{ server: string; serverName?: string; resource: MCPResource }>>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -31,7 +31,7 @@ export default function ResourcesPanel() {
         const servers = await listWorkspaceMCPServers(workspaceId);
         if (cancelled) return;
         const flattened = servers.flatMap((s) =>
-          (s.resources ?? []).map((r) => ({ server: s.server, resource: r }))
+          (s.resources ?? []).map((r) => ({ server: s.server, serverName: s.name, resource: r }))
         );
         setResources(flattened);
       } catch (err) {
@@ -54,7 +54,7 @@ export default function ResourcesPanel() {
   }, [panelState.resources]);
 
   const toggleResource = useCallback(
-    (server: string, resource: MCPResource) => {
+    (server: string, resource: MCPResource, serverName?: string) => {
       const uri = resource.uri ?? '';
       if (!uri) return;
 
@@ -68,6 +68,7 @@ export default function ResourcesPanel() {
               ...existing,
               {
                 server,
+                serverName,
                 uri,
                 title: resource.title,
                 contentType: resource.contentType ?? resource.content_type,
@@ -92,7 +93,7 @@ export default function ResourcesPanel() {
         const found = resources.find(
           (r) => r.server === payload.server && (r.resource.uri ?? '') === payload.uri
         );
-        if (found) toggleResource(found.server, found.resource);
+        if (found) toggleResource(found.server, found.resource, found.serverName);
         return;
       }
 
@@ -220,7 +221,7 @@ export default function ResourcesPanel() {
           <div className="px-2 py-1 text-sm text-gray-500">No resources available.</div>
         )}
 
-        {resources.map(({ server, resource }) => {
+        {resources.map(({ server, serverName, resource }) => {
           const uri = resource.uri ?? '';
           const title = resource.title ?? resource.id ?? uri;
           const key = `${server}::${uri}`;
@@ -251,7 +252,7 @@ export default function ResourcesPanel() {
                   type="checkbox"
                   className="sr-only peer"
                   checked={checked}
-                  onChange={() => toggleResource(server, resource)}
+                  onChange={() => toggleResource(server, resource, serverName)}
                 />
                 <div className="w-8 h-5 bg-gray-200 peer-checked:bg-blue-500 rounded-full transition-all duration-100" />
                 <div className="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full shadow transform peer-checked:translate-x-3 transition-transform duration-100" />

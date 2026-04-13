@@ -28,6 +28,7 @@ class MCPPrompt(BaseModel):
 
 class MCPServerInfo(BaseModel):
     server: str
+    name: Optional[str] = None
     tools: List[MCPTool] = Field(default_factory=list)
     resources: List[MCPResourceDesc] = Field(default_factory=list)
     prompts: List[MCPPrompt] = Field(default_factory=list)

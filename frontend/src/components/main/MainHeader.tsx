@@ -138,6 +138,7 @@ export default function HeaderBar({
       };
       const artifact = await createArtifact({
         content: text,
+        content_type: CHAT_CONTENT_TYPE,
         context: JSON.stringify(chatContext),
       });
       setQuickAddText('');

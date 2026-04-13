@@ -629,6 +629,153 @@ async def apply_metadata(
 
 
 # ---------------------------------------------------------------------------
+# Tool: ingest_pipeline
+# ---------------------------------------------------------------------------
+
+_METADATA_EXTRACTION_PROMPT = (
+    "You are a document metadata extraction assistant.\n\n"
+    "Extract structured metadata from the document text provided.\n\n"
+    "Return ONLY a valid JSON object with exactly these fields:\n"
+    "- published_by: the publishing organization or author name (string, or null)\n"
+    "- published_date: publication date in YYYY-MM-DD format (string, or null)\n"
+    "- document_type: one of Report, Correspondence, Forecast, Instructional, "
+    "Analysis, Transcript, Schedule, Other\n"
+    "- formality: one of High, Medium, Low\n"
+    "- sector: primary industry sector (string, e.g. 'Technology', 'Finance', "
+    "'Healthcare', 'Government', 'Energy', 'Other')\n"
+    "- issues: list of key topics or issues covered (array of short strings, "
+    "max 8 items)\n\n"
+    "Return only the JSON object — no markdown fences, no explanation."
+)
+
+# Limit extracted text sent to LLM to avoid token blow-up
+_MAX_LLM_TEXT_CHARS = 60_000
+
+
+@mcp.tool(
+    description=(
+        "Run the full document ingestion pipeline on a PDF artifact: "
+        "deduplication check → text extraction → LLM metadata extraction → "
+        "apply metadata back to the source artifact. Returns a summary of "
+        "all steps executed."
+    )
+)
+async def ingest_pipeline(
+    workspace_id: str,
+    artifact_id: str,
+    skip_dedup: bool = False,
+) -> str:
+    """
+    Args:
+        workspace_id: Workspace containing the PDF artifact.
+        artifact_id: The PDF artifact to ingest.
+        skip_dedup: Skip the deduplication check (default: False).
+    """
+    steps: list[dict] = []
+
+    # Step 1 — Deduplication
+    if not skip_dedup:
+        dedup_raw = await deduplicate(workspace_id, artifact_id)
+        try:
+            dedup_result = json.loads(dedup_raw)
+        except json.JSONDecodeError:
+            return json.dumps({"status": "error", "step": "dedup", "reason": f"unexpected dedup response: {dedup_raw[:200]}"})
+
+        steps.append({"step": "dedup", "result": dedup_result})
+
+        if dedup_result.get("status") == "error":
+            return json.dumps({"status": "error", "step": "dedup", "reason": dedup_result.get("reason", "unknown")})
+        if dedup_result.get("status") == "duplicate":
+            return json.dumps({
+                "status": "duplicate",
+                "artifact_id": artifact_id,
+                "duplicate_of": dedup_result.get("duplicate_of"),
+                "steps": steps,
+            })
+    else:
+        steps.append({"step": "dedup", "result": {"status": "skipped"}})
+
+    # Step 2 — PDF text extraction
+    extract_raw = await document_text_extract(workspace_id, artifact_id)
+    try:
+        extract_result = json.loads(extract_raw)
+    except json.JSONDecodeError:
+        return json.dumps({"status": "error", "step": "pdf_extract", "reason": f"unexpected extract response: {extract_raw[:200]}"})
+
+    steps.append({"step": "pdf_extract", "result": extract_result})
+
+    if extract_result.get("status") != "ok":
+        return json.dumps({"status": "error", "step": "pdf_extract", "reason": extract_result.get("reason", "extraction failed"), "steps": steps})
+
+    text_artifact_id = extract_result.get("text_artifact_id")
+
+    # Fetch the extracted text from the derived artifact
+    try:
+        text_artifact = await _get_workspace_artifact(workspace_id, text_artifact_id)
+        extracted_text = (text_artifact.get("content") or "").strip()
+    except httpx.HTTPError as exc:
+        return json.dumps({"status": "error", "step": "pdf_extract", "reason": f"failed to read extracted text artifact: {exc}", "steps": steps})
+
+    if not extracted_text:
+        return json.dumps({"status": "error", "step": "pdf_extract", "reason": "extracted text artifact is empty", "steps": steps})
+
+    # Step 3 — LLM metadata extraction
+    truncated_text = extracted_text[:_MAX_LLM_TEXT_CHARS]
+    llm_input = f"{_METADATA_EXTRACTION_PROMPT}\n\n---\n\nDocument text:\n{truncated_text}"
+
+    try:
+        async with httpx.AsyncClient() as client:
+            llm_resp = await client.post(
+                f"{AGIENCE_API_URI}/agents/invoke",
+                headers=await _user_headers(),
+                json={"input": llm_input},
+                timeout=120,
+            )
+        llm_resp.raise_for_status()
+        llm_data = llm_resp.json()
+        llm_output = llm_data.get("output", "")
+    except httpx.HTTPError as exc:
+        steps.append({"step": "metadata_extract", "result": {"status": "error", "reason": str(exc)}})
+        return json.dumps({"status": "partial", "artifact_id": artifact_id, "text_artifact_id": text_artifact_id, "reason": f"LLM metadata extraction failed: {exc}", "steps": steps})
+
+    # Parse LLM output as JSON
+    metadata = None
+    try:
+        # Strip markdown fences if the LLM ignored instructions
+        clean = llm_output.strip()
+        if clean.startswith("```"):
+            clean = clean.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        metadata = json.loads(clean)
+    except json.JSONDecodeError:
+        steps.append({"step": "metadata_extract", "result": {"status": "error", "reason": "LLM returned non-JSON", "raw": llm_output[:500]}})
+        return json.dumps({"status": "partial", "artifact_id": artifact_id, "text_artifact_id": text_artifact_id, "reason": "LLM metadata response was not valid JSON", "steps": steps})
+
+    steps.append({"step": "metadata_extract", "result": {"status": "ok", "metadata": metadata}})
+
+    # Step 4 — Apply metadata to source artifact
+    apply_raw = await apply_metadata(workspace_id, artifact_id, json.dumps(metadata))
+    try:
+        apply_result = json.loads(apply_raw)
+    except json.JSONDecodeError:
+        return json.dumps({"status": "error", "step": "metadata_apply", "reason": f"unexpected apply response: {apply_raw[:200]}", "steps": steps})
+
+    steps.append({"step": "metadata_apply", "result": apply_result})
+
+    if apply_result.get("status") != "ok":
+        return json.dumps({"status": "partial", "artifact_id": artifact_id, "text_artifact_id": text_artifact_id, "reason": "metadata apply failed", "steps": steps})
+
+    return json.dumps({
+        "status": "ok",
+        "artifact_id": artifact_id,
+        "text_artifact_id": text_artifact_id,
+        "pages": extract_result.get("pages"),
+        "content_hash": extract_result.get("content_hash"),
+        "metadata": metadata,
+        "steps": steps,
+    }, indent=2)
+
+
+# ---------------------------------------------------------------------------
 # Tool: deduplicate
 # ---------------------------------------------------------------------------
 

@@ -10,6 +10,8 @@ app startup in `main.py` via `register_builtin_handlers()`.
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import importlib
 import logging
 from dataclasses import dataclass
@@ -198,19 +200,21 @@ class McpToolHandler:
         workspace_id = body.get("workspace_id") if isinstance(body, dict) else None
         arguments = body.get("arguments") if isinstance(body, dict) and "arguments" in body else body
 
-        # `mcp_service.invoke_tool` is currently a synchronous function, but
-        # tests may mock it with an async variant and Phase 7 may rewrite it.
-        # Await the result only if it is awaitable — works for both shapes.
-        result = mcp_service.invoke_tool(
-            db=ctx.arango_db,
-            user_id=ctx.user_id,
-            workspace_id=workspace_id,
-            server_artifact_id=str(server_id),
-            tool_name=str(tool_name),
-            arguments=arguments or {},
+        # `mcp_service.invoke_tool` is synchronous (uses httpx.Client). Run it
+        # in a thread-pool executor so it does not block the asyncio event loop.
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None,
+            functools.partial(
+                mcp_service.invoke_tool,
+                db=ctx.arango_db,
+                user_id=ctx.user_id,
+                workspace_id=workspace_id,
+                server_artifact_id=str(server_id),
+                tool_name=str(tool_name),
+                arguments=arguments or {},
+            ),
         )
-        if hasattr(result, "__await__"):
-            result = await result
         return result
 
 
