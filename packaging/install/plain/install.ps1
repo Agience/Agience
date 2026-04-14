@@ -1,26 +1,29 @@
 # ──────────────────────────────────────────────────────────────────────
-# Agience — Canary Install Script (Windows)
+# Agience — Plain Install Script (Windows)
 #
-# One shot: pulls the latest canary images, starts Agience, opens your browser.
-# No git clone, no build tools, no .env file required.
+# Stable images, no domain, no TLS. Runs at http://localhost:8080.
 #
 # Usage:
-#   irm https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/canary/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/plain/install.ps1 | iex
 #
 # After install:
 #   agience up      start
 #   agience down    stop
-#   agience update  pull latest canary and restart
 # ──────────────────────────────────────────────────────────────────────
 #Requires -Version 5.1
+[CmdletBinding()]
+param(
+    [string]$DataPath = ''
+)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # ── Configuration ────────────────────────────────────────────────────
 
-$InstallDir = Join-Path $env:USERPROFILE '.agience'
-$BinDir     = Join-Path $InstallDir 'bin'
-$ComposeUrl = 'https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/canary/docker-compose.yml'
+$InstallDir = if ($DataPath) { $DataPath } else { Join-Path $env:USERPROFILE '.agience' }
+$BinDir     = Join-Path $env:USERPROFILE '.agience\bin'
+$ComposeUrl = 'https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/plain/docker-compose.yml'
+$OpenUrl    = 'http://localhost:8080'
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -46,8 +49,8 @@ function Add-ToUserPath {
 
 Write-Host ""
 Write-Host "  +--------------------------------------+" -ForegroundColor Magenta
-Write-Host "  |        Agience -- Canary Install     |" -ForegroundColor Magenta
-Write-Host "  |        latest main build             |" -ForegroundColor Magenta
+Write-Host "  |        Agience -- Local Install      |" -ForegroundColor Magenta
+Write-Host "  |        http://localhost:8080         |" -ForegroundColor Magenta
 Write-Host "  +--------------------------------------+" -ForegroundColor Magenta
 Write-Host ""
 
@@ -80,18 +83,13 @@ Write-Ok "Docker is installed and running"
 
 # ── Step 2: Check Port Conflicts ────────────────────────────────────
 
-Write-Info "Checking for port conflicts..."
+Write-Info "Checking for port conflicts on port 8080..."
 
-$conflicts = @()
-foreach ($port in @(5173, 8081, 8082)) {
-    $used = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
-    if ($used) { $conflicts += $port }
-}
-
-if ($conflicts.Count -gt 0) {
-    Write-Warn "Ports in use: $($conflicts -join ', '). Stop those services before running 'agience up'."
+$used = Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue
+if ($used) {
+    Write-Warn "Port 8080 is in use. Stop that service before running 'agience up'."
 } else {
-    Write-Ok "Ports 5173, 8081, and 8082 are available"
+    Write-Ok "Port 8080 is available"
 }
 
 # ── Step 3: Create Install Directory ────────────────────────────────
@@ -105,7 +103,7 @@ New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 New-Item -ItemType Directory -Path $BinDir     -Force | Out-Null
 
 if ($isUpdate) {
-    Write-Warn "Existing installation found — updating compose file and restarting"
+    Write-Warn "Existing installation found — updating and restarting"
 } else {
     Write-Ok "Created $InstallDir"
 }
@@ -122,9 +120,9 @@ if ((Get-Item $composeFile).Length -eq 0) {
 
 Write-Ok "Compose file downloaded"
 
-# ── Step 5: Pull Images ─────────────────────────────────────────────
+# ── Step 5: Pull Images ──────────────────────────────────────────────
 
-Write-Info "Pulling canary images (this may take a few minutes)..."
+Write-Info "Pulling container images (this may take a few minutes)..."
 Write-Host ""
 
 Push-Location $InstallDir
@@ -134,7 +132,7 @@ Pop-Location
 Write-Host ""
 Write-Ok "All images pulled"
 
-# ── Step 6: Install agience.bat ─────────────────────────────────────
+# ── Step 6: Install agience.bat ──────────────────────────────────────
 
 Write-Info "Installing agience command..."
 
@@ -154,14 +152,13 @@ if "%1"=="down"   goto do_down
 if "%1"=="logs"   goto do_logs
 if "%1"=="update" goto do_update
 if "%1"=="status" goto do_status
-if "%1"=="reset"  goto do_reset
-echo Usage: agience [up^|down^|logs^|update^|status^|reset]
+echo Usage: agience [up^|down^|logs^|update^|status]
 exit /b 1
 
 :do_up
 docker compose up -d
 echo.
-echo Agience is running. Open: http://localhost:5173
+echo Agience is running. Open: http://localhost:8080
 goto done
 
 :do_down
@@ -179,35 +176,6 @@ goto done
 
 :do_status
 docker compose ps
-goto done
-
-:do_reset
-echo.
-echo ============================================================
-echo   FACTORY RESET - THIS WILL PERMANENTLY DELETE ALL DATA
-echo ============================================================
-echo.
-echo   This will stop all containers and delete all persistent
-echo   data (database, object store, search index, keys).
-echo   The setup wizard will run on next start.
-echo.
-set /p "CONFIRM=   Are you sure? [y/N] "
-if /i not "%CONFIRM%"=="y" (
-    echo Aborted.
-    goto done
-)
-echo.
-echo Stopping containers...
-docker compose down
-echo Deleting data...
-if exist "%AGIENCE_DIR%\.data" (
-    rmdir /s /q "%AGIENCE_DIR%\.data"
-    echo Data deleted.
-) else (
-    echo No data directory found - already clean.
-)
-echo.
-echo Reset complete. Run 'agience up' to start fresh.
 goto done
 
 :done
@@ -228,60 +196,28 @@ Push-Location $InstallDir
 docker compose up -d
 Pop-Location
 
-Write-Ok "Agience is starting"
+Write-Ok "Agience is running"
 
-# ── Step 8: Wait for frontend and open browser ───────────────────────
+# ── Step 8: Open browser ─────────────────────────────────────────────
 
-Write-Info "Waiting for frontend to be ready..."
-
-$deadline = (Get-Date).AddSeconds(180)
-$opened = $false
-while ((Get-Date) -lt $deadline) {
-    try {
-        $r = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:5173 -TimeoutSec 3 -ErrorAction Stop
-        if ($r.StatusCode -eq 200) {
-            $url = 'http://localhost:5173'
-            $tokenFile = Join-Path $InstallDir '.data\keys\setup.token'
-            if (Test-Path $tokenFile) {
-                try {
-                    $status = Invoke-RestMethod -Uri 'http://127.0.0.1:8081/setup/status' -TimeoutSec 5 -ErrorAction Stop
-                    if ($status.needs_setup) {
-                        $token = (Get-Content $tokenFile -Raw).Trim()
-                        $url = "http://localhost:5173/setup?token=$token"
-                    }
-                } catch {}
-            }
-            Start-Process $url
-            $opened = $true
-            break
-        }
-    } catch {}
-    Start-Sleep -Seconds 3
-}
-
-if (-not $opened) {
-    Write-Warn "Frontend not ready yet — visit http://localhost:5173 once containers are healthy"
-}
+Start-Process $OpenUrl
 
 # ── Done ─────────────────────────────────────────────────────────────
 
 Write-Host ""
 Write-Host "  +--------------------------------------+" -ForegroundColor Green
-Write-Host "  |     Agience (canary) is running!     |" -ForegroundColor Green
+Write-Host "  |     Agience is running!              |" -ForegroundColor Green
 Write-Host "  +--------------------------------------+" -ForegroundColor Green
 Write-Host ""
-Write-Host "  Open:     http://localhost:5173" -ForegroundColor White
-Write-Host "  API:      http://localhost:8081" -ForegroundColor Gray
-Write-Host "  Servers:  http://localhost:8082" -ForegroundColor Gray
-Write-Host "  Data:     $InstallDir\.data\" -ForegroundColor Gray
+Write-Host "  Open:   $OpenUrl" -ForegroundColor White
+Write-Host "  Data:   $InstallDir\.data\" -ForegroundColor Gray
 Write-Host ""
 Write-Host "  Commands:" -ForegroundColor White
 Write-Host "    agience up        start"
 Write-Host "    agience down      stop"
 Write-Host "    agience logs      watch logs"
-Write-Host "    agience update    pull latest canary images and restart"
+Write-Host "    agience update    pull latest images and restart"
 Write-Host "    agience status    show running containers"
-Write-Host "    agience reset     wipe all data and start fresh"
 Write-Host ""
 
 if ($pathUpdated) {

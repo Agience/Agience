@@ -70,4 +70,4 @@ jobs:
           git tag "$TAG" -m "Agience $TAG"
           git push origin "$TAG"
           echo "Tagged $TAG on $BRANCH @ $(git rev-parse --short HEAD)"
-          echo "Triggers: build-and-push-ghcr.yml (:latest :${MINOR} :${VERSION}) and release.yml (GitHub Release)"
+          echo "Triggers: build-and-push-ghcr.yml (:stable :${MINOR} :${VERSION}) and release.yml (GitHub Release)"

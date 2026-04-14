@@ -7,7 +7,7 @@
     merges release/X.Y -> main, then prints push instructions.
 
     Triggering pipelines (after you push):
-      - build-and-push-ghcr.yml  ->  :latest  :X.Y  :X.Y.Z  (Docker Hub + GHCR)
+      - build-and-push-ghcr.yml  ->  :stable  :X.Y  :X.Y.Z  (Docker Hub + GHCR)
       - release.yml              ->  GitHub Release with release notes
       - deploy-suite.yml         ->  my.agience.ai deploy (on release published)
 
@@ -34,25 +34,36 @@ if ($Version -notmatch '^\d+\.\d+\.\d+$') {
 $MinorVersion  = $Version -replace '\.\d+$', ''
 $ReleaseBranch = "release/$MinorVersion"
 $Tag           = "v$Version"
+$Utf8NoBom     = New-Object System.Text.UTF8Encoding($false)
 
-# Must be on the matching release branch
+# Auto-checkout the release branch if not already on it
 $CurrentBranch = (git rev-parse --abbrev-ref HEAD 2>&1).Trim()
 if ($CurrentBranch -ne $ReleaseBranch) {
-    Write-Host "ERROR: Must be on '$ReleaseBranch' (currently on '$CurrentBranch')" -ForegroundColor Red
-    Write-Host "  Run: git checkout $ReleaseBranch" -ForegroundColor Yellow
-    exit 1
+    Write-Host "  Switching to $ReleaseBranch..." -ForegroundColor Cyan
+    git checkout --quiet $ReleaseBranch
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: Could not checkout '$ReleaseBranch'. Does it exist?" -ForegroundColor Red
+        exit 1
+    }
 }
 
-# Validate build_info.json
+# Auto-bump build_info.json if version doesn't match, then commit
 if (-not (Test-Path "build_info.json")) {
     Write-Host "ERROR: build_info.json not found in working directory" -ForegroundColor Red
     exit 1
 }
 $BuildInfo = Get-Content build_info.json -Raw | ConvertFrom-Json
 if ($BuildInfo.version -ne $Version) {
-    Write-Host "ERROR: build_info.json version '$($BuildInfo.version)' does not match '$Version'" -ForegroundColor Red
-    Write-Host "  Update build_info.json version to '$Version' first, then commit it to $ReleaseBranch." -ForegroundColor Yellow
-    exit 1
+    Write-Host "  Bumping build_info.json to $Version..." -ForegroundColor Cyan
+    $newBuildInfo = @{ version = $Version } | ConvertTo-Json
+    [System.IO.File]::WriteAllText("build_info.json", $newBuildInfo, $Utf8NoBom)
+    git add build_info.json 2>&1 | Out-Null
+    git commit -m "Bump version to $Version" --quiet 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: Failed to commit version bump." -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "  Committed version bump." -ForegroundColor Gray
 }
 
 # Check tag doesn't already exist
@@ -89,7 +100,11 @@ if ($LASTEXITCODE -ne 0) {
 
 # Forward-port release branch into main
 Write-Host "  Merging $ReleaseBranch -> main..." -ForegroundColor Cyan
-git checkout main
+git checkout --quiet main
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "ERROR: Failed to checkout main for forward-port." -ForegroundColor Red
+    exit 1
+}
 git pull origin main
 git merge --no-ff $ReleaseBranch -m "Forward-port $ReleaseBranch into main (post $Tag)"
 
@@ -116,7 +131,7 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host ""
 Write-Host "  Done. Triggered:" -ForegroundColor Green
-Write-Host "    - build-and-push-ghcr.yml  ->  :latest  :$MinorVersion  :$Version  (Docker Hub + GHCR)" -ForegroundColor Gray
+Write-Host "    - build-and-push-ghcr.yml  ->  :stable  :$MinorVersion  :$Version  (Docker Hub + GHCR)" -ForegroundColor Gray
 Write-Host "    - release.yml              ->  GitHub Release with release notes" -ForegroundColor Gray
 Write-Host "    - deploy-suite.yml         ->  my.agience.ai deploy (on workflow_run)" -ForegroundColor Gray
 Write-Host ""

@@ -1,21 +1,15 @@
-# Agience Canary — local install (home.agience.ai → 127.0.0.1)
+# Agience Local — stable build, no domain, no TLS
 #
-# Pulls :canary images built from every push to main.
-# These builds may be unstable. Use for testing and early feedback.
-#
-# Self-contained — no .env file, no external config files required.
+# Self-contained — no .env file, no external config required.
 # The init container generates all credentials on first boot.
+# Runs on http://localhost:8080 — no domain or certificate needed.
 #
-# Install:   curl -fsSL https://get.agience.ai/canary/install.sh | sh
-# Start:     agience-canary up
-# Open:      https://home.agience.ai
-# Update:    agience-canary update
+# Set REGISTRY in environment to override the Docker Hub namespace (default: agience).
 #
-# Only one Agience stack (home or canary) can run at a time — both use
-# ports 80/443 at home.agience.ai. Run `agience down` or `agience-canary down`
-# before switching.
-
-name: agience-canary
+# Install:   irm https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/plain/install.ps1 | iex
+#            curl -fsSL https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/plain/install.sh | sh
+# Start:     docker compose up -d
+# Open:      http://localhost:8080
 
 services:
 
@@ -23,8 +17,8 @@ services:
   # Idempotent: skips if .data/.initialized exists.
 
   init:
-    image: ${REGISTRY:-agience}/agience-init:${VERSION:-canary}
-    container_name: canary-init
+    image: ${REGISTRY:-agience}/agience-init:${VERSION:-stable}
+    container_name: init
     volumes:
       - ./.data:/data
 
@@ -32,7 +26,7 @@ services:
 
   graph:
     image: arangodb:3.11
-    container_name: canary-graph
+    container_name: graph
     restart: unless-stopped
     environment:
       - ARANGO_NO_AUTH=0
@@ -53,7 +47,7 @@ services:
 
   sql:
     image: postgres:15
-    container_name: canary-sql
+    container_name: sql
     restart: unless-stopped
     environment:
       PGPORT: 5432
@@ -75,7 +69,7 @@ services:
 
   search:
     image: opensearchproject/opensearch:latest
-    container_name: canary-search
+    container_name: search
     restart: unless-stopped
     environment:
       - cluster.name=agience-search
@@ -106,7 +100,7 @@ services:
 
   content:
     image: minio/minio:latest
-    container_name: canary-content
+    container_name: content
     restart: unless-stopped
     environment:
       - MINIO_ROOT_USER=agience
@@ -127,9 +121,9 @@ services:
   # ── Platform services ────────────────────────────────────────────────
 
   backend:
-    image: ${REGISTRY:-agience}/agience-backend:${VERSION:-canary}
+    image: ${REGISTRY:-agience}/agience-backend:${VERSION:-stable}
     pull_policy: always
-    container_name: canary-backend
+    container_name: backend
     restart: unless-stopped
     environment:
       - BUILD_INFO_PATH=/app/build_info.json
@@ -139,6 +133,7 @@ services:
       - AGIENCE_SERVER_HOST_URI=http://servers:8082
       - MINIO_ROOT_USER=agience
       - KEYS_DIR=/app/.data/keys
+      - CONTENT_URI=http://localhost:8080/content
     volumes:
       - ./.data/keys:/app/.data/keys:ro
     depends_on:
@@ -158,9 +153,9 @@ services:
       start_period: 30s
 
   servers:
-    image: ${REGISTRY:-agience}/agience-servers:${VERSION:-canary}
+    image: ${REGISTRY:-agience}/agience-servers:${VERSION:-stable}
     pull_policy: always
-    container_name: canary-servers
+    container_name: servers
     restart: unless-stopped
     environment:
       - AGIENCE_API_URI=http://backend:8081
@@ -173,9 +168,9 @@ services:
       backend: { condition: service_healthy }
 
   stream:
-    image: ${REGISTRY:-agience}/agience-stream:${VERSION:-canary}
+    image: ${REGISTRY:-agience}/agience-stream:${VERSION:-stable}
     pull_policy: always
-    container_name: canary-stream
+    container_name: stream
     restart: unless-stopped
     environment:
       - BACKEND_URI=http://servers:8082/astra
@@ -185,24 +180,25 @@ services:
       - "1936:1936"
 
   frontend:
-    image: ${REGISTRY:-agience}/agience-frontend:${VERSION:-canary}
+    image: ${REGISTRY:-agience}/agience-frontend:${VERSION:-stable}
     pull_policy: always
-    container_name: canary-frontend
+    container_name: frontend
     restart: unless-stopped
 
-  # ── Router — Caddy with TLS cert fetched from CDN at startup ─────────
+  # ── Router — plain Caddy, HTTP only, no domain required ──────────────
+  # Serves on http://localhost:8080.
+  # No TLS cert, no agience-home image needed.
 
   caddy:
-    image: ghcr.io/agience/agience-home:latest
+    image: caddy:alpine
     pull_policy: always
-    container_name: canary-caddy
+    container_name: caddy
     restart: unless-stopped
     ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    volumes:
-      - ./.data/keys:/run/keys
+      - "8080:8080"
+    configs:
+      - source: caddy_config
+        target: /etc/caddy/Caddyfile
     depends_on:
       init:
         condition: service_completed_successfully
@@ -214,3 +210,35 @@ services:
         condition: service_started
       stream:
         condition: service_started
+
+configs:
+  caddy_config:
+    content: |
+      :8080 {
+        handle /auth/* { reverse_proxy backend:8081 }
+        handle /artifacts/* { reverse_proxy backend:8081 }
+        handle /agents/* { reverse_proxy backend:8081 }
+        handle /events* { reverse_proxy backend:8081 }
+        handle /grants/* { reverse_proxy backend:8081 }
+        handle /api-keys/* { reverse_proxy backend:8081 }
+        handle /secrets/* { reverse_proxy backend:8081 }
+        handle /types/* { reverse_proxy backend:8081 }
+        handle /mcp* { reverse_proxy backend:8081 }
+        handle /platform/* { reverse_proxy backend:8081 }
+        handle /setup/* { reverse_proxy backend:8081 }
+        handle /relay/* { reverse_proxy backend:8081 }
+        handle /server-credentials/* { reverse_proxy backend:8081 }
+        handle /gate/* { reverse_proxy backend:8081 }
+        handle /passkey/* { reverse_proxy backend:8081 }
+        handle /otp/* { reverse_proxy backend:8081 }
+        handle /inbound/* { reverse_proxy backend:8081 }
+        handle /.well-known/* { reverse_proxy backend:8081 }
+        handle /version { reverse_proxy backend:8081 }
+        handle /content/* {
+          uri strip_prefix /content
+          reverse_proxy content:9000
+        }
+        handle {
+          reverse_proxy frontend:80
+        }
+      }

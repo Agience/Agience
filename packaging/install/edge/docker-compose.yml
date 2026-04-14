@@ -1,16 +1,21 @@
-# Agience Home — local install (home.agience.ai → 127.0.0.1)
+# Agience Edge — local install (home.agience.ai → 127.0.0.1)
+#
+# Pulls :edge images built from every push to main.
+# These builds may be unstable. Use for testing and early feedback.
 #
 # Self-contained — no .env file, no external config files required.
 # The init container generates all credentials on first boot.
-# The Caddy image fetches the TLS cert from CDN at startup.
-# Platform settings are configured through the setup wizard in the browser.
 #
-# Set REGISTRY in .env to override the Docker Hub namespace (default: agience).
-#
-# Install:   curl -fsSL https://get.agience.ai/home/install.sh | sh
-# Start:     docker compose up -d
+# Install:   curl -fsSL https://get.agience.ai/edge/install.sh | sh
+# Start:     agience-edge up
 # Open:      https://home.agience.ai
-# Update:    docker compose pull && docker compose up -d
+# Update:    agience-edge update
+#
+# Only one Agience stack (home or edge) can run at a time — both use
+# ports 80/443 at home.agience.ai. Run `agience down` or `agience-edge down`
+# before switching.
+
+name: agience-edge
 
 services:
 
@@ -18,8 +23,8 @@ services:
   # Idempotent: skips if .data/.initialized exists.
 
   init:
-    image: ${REGISTRY:-agience}/agience-init:${VERSION:-stable}
-    container_name: init
+    image: ${REGISTRY:-agience}/agience-init:${VERSION:-edge}
+    container_name: edge-init
     volumes:
       - ./.data:/data
 
@@ -27,7 +32,7 @@ services:
 
   graph:
     image: arangodb:3.11
-    container_name: graph
+    container_name: edge-graph
     restart: unless-stopped
     environment:
       - ARANGO_NO_AUTH=0
@@ -48,7 +53,7 @@ services:
 
   sql:
     image: postgres:15
-    container_name: sql
+    container_name: edge-sql
     restart: unless-stopped
     environment:
       PGPORT: 5432
@@ -70,7 +75,7 @@ services:
 
   search:
     image: opensearchproject/opensearch:latest
-    container_name: search
+    container_name: edge-search
     restart: unless-stopped
     environment:
       - cluster.name=agience-search
@@ -101,7 +106,7 @@ services:
 
   content:
     image: minio/minio:latest
-    container_name: content
+    container_name: edge-content
     restart: unless-stopped
     environment:
       - MINIO_ROOT_USER=agience
@@ -122,9 +127,9 @@ services:
   # ── Platform services ────────────────────────────────────────────────
 
   backend:
-    image: ${REGISTRY:-agience}/agience-backend:${VERSION:-stable}
+    image: ${REGISTRY:-agience}/agience-backend:${VERSION:-edge}
     pull_policy: always
-    container_name: backend
+    container_name: edge-backend
     restart: unless-stopped
     environment:
       - BUILD_INFO_PATH=/app/build_info.json
@@ -153,9 +158,9 @@ services:
       start_period: 30s
 
   servers:
-    image: ${REGISTRY:-agience}/agience-servers:${VERSION:-stable}
+    image: ${REGISTRY:-agience}/agience-servers:${VERSION:-edge}
     pull_policy: always
-    container_name: servers
+    container_name: edge-servers
     restart: unless-stopped
     environment:
       - AGIENCE_API_URI=http://backend:8081
@@ -168,9 +173,9 @@ services:
       backend: { condition: service_healthy }
 
   stream:
-    image: ${REGISTRY:-agience}/agience-stream:${VERSION:-stable}
+    image: ${REGISTRY:-agience}/agience-stream:${VERSION:-edge}
     pull_policy: always
-    container_name: stream
+    container_name: edge-stream
     restart: unless-stopped
     environment:
       - BACKEND_URI=http://servers:8082/astra
@@ -180,19 +185,17 @@ services:
       - "1936:1936"
 
   frontend:
-    image: ${REGISTRY:-agience}/agience-frontend:${VERSION:-stable}
+    image: ${REGISTRY:-agience}/agience-frontend:${VERSION:-edge}
     pull_policy: always
-    container_name: frontend
+    container_name: edge-frontend
     restart: unless-stopped
 
   # ── Router — Caddy with TLS cert fetched from CDN at startup ─────────
-  # The agience-home image has the Caddyfile baked in and fetches
-  # the TLS cert from get.agience.ai on every container start.
 
   caddy:
-    image: ${REGISTRY:-agience}/agience-home:stable
+    image: ghcr.io/agience/agience-home:stable
     pull_policy: always
-    container_name: caddy
+    container_name: edge-caddy
     restart: unless-stopped
     ports:
       - "80:80"

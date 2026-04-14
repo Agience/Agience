@@ -35,9 +35,15 @@ jobs:
           name: Agience v${{ steps.build-info.outputs.version }}
           generate_release_notes: true
           body: |
-            ## Docker Images
+            See the [Getting Started](https://github.com/Agience/agience-core#getting-started) section of the README for setup instructions:
 
-            Pull from **Docker Hub** or **GitHub Container Registry**:
+            - **Local** — stable images, no domain, no TLS: `http://localhost:8080`
+            - **Home** — stable images on your own domain with automatic TLS via [agience-home](https://github.com/Agience/agience-home)
+            - **Dev** — run from source (contributors)
+            - **My** — managed cloud deployment at [my.agience.ai](https://my.agience.ai)
+            - **Hosted** — sign up at [agience.ai](https://agience.ai)
+
+            ## Docker Images
 
             ```bash
             # Docker Hub
@@ -54,5 +60,3 @@ jobs:
             docker pull ghcr.io/agience/agience-stream:${{ steps.build-info.outputs.version }}
             docker pull ghcr.io/agience/agience-init:${{ steps.build-info.outputs.version }}
             ```
-
-            To deploy, set `VERSION=${{ steps.build-info.outputs.version }}` in your host `.env` and run `docker compose pull && docker compose up -d`.

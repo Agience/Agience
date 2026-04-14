@@ -20,6 +20,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # ---- App code ----
 COPY backend/ ./
 COPY types/ /types/
+COPY servers/manifest.json /servers/manifest.json
 COPY build_info.json /app/build_info.json
 COPY .scripts/stamp_build_time.py /app/scripts/stamp_build_time.py
 

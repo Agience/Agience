@@ -76,34 +76,30 @@ See [ROADMAP.md](ROADMAP.md) for the full capability inventory and what's coming
 
 ## Getting Started
 
-### Run Agience (canary build — no build tools required)
+### Run Agience at Home (stable build)
 
-No git clone needed. Paste one command and Docker does the rest.
+No git clone needed. One command installs the full platform on your machine. Runs at `https://home.agience.ai` — that domain always resolves to `127.0.0.1`, so traffic never leaves your machine. Caddy fetches the TLS certificate automatically.
 
 **Windows (PowerShell):**
 ```powershell
-irm https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/canary/install.ps1 | iex
+irm https://get.agience.ai/home/install.ps1 | iex
 ```
 
 **Linux / macOS:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/canary/install.sh | sh
+curl -fsSL https://get.agience.ai/home/install.sh | sh
 ```
 
-This downloads the compose file, pulls all `:canary` images, and opens the setup wizard automatically. Images are published on every merge to `main`.
+After that: `agience up` / `agience down` / `agience update`.
 
-Already have a clone? Run directly:
-```
-agience canary          # Windows
-./agience canary        # Linux / macOS
-agience canary -f       # force-pull latest images
-```
-
-### Run Agience at Home (stable build)
-
-For a stable, pre-configured home deployment using pinned release images, clone the [agience-home](https://github.com/Agience/agience-home) repo and follow the setup instructions there.
-
-The one-command hosted installer (`get.agience.ai`) is coming soon.
+> **On a restricted network or prefer plain HTTP?**
+> The [Local install](packaging/install/local/) runs at `http://localhost:8080` with no domain or certificate required.
+> ```powershell
+> irm https://get.agience.ai/local/install.ps1 | iex
+> ```
+> ```bash
+> curl -fsSL https://get.agience.ai/local/install.sh | sh
+> ```
 
 ### Developer Setup (build from source)
 
@@ -131,6 +127,20 @@ Full developer guide: [`docs/getting-started/local-development.md`](docs/getting
 ### Hosted
 
 Sign up at [agience.ai](https://agience.ai) — no setup required.
+
+### Canary builds (contributors and testers)
+
+Published on every merge to `main`. Not for production use.
+
+**Windows (PowerShell):**
+```powershell
+irm https://get.agience.ai/canary/install.ps1 | iex
+```
+
+**Linux / macOS:**
+```bash
+curl -fsSL https://get.agience.ai/canary/install.sh | sh
+```
 
 ---
 

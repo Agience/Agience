@@ -53,7 +53,7 @@ python-dateutil==2.9.0.post0
 python-jose==3.5.0
 
 # Testing
-pytest==8.2.2
+pytest==8.4.2
 pytest-asyncio>=1.0.0
 pytest-xdist>=3.5.0
 pytest-timeout>=2.2.0

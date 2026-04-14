@@ -13,7 +13,7 @@
     build_info.json is also stamped in your local main working tree (not committed).
 
 .PARAMETER Version
-    Optional for main/canary publishes. Required when using -ReleaseBranch. Stamps build_info.json and creates git tag v{Version}.
+    Optional for main/edge publishes. Required when using -ReleaseBranch. Stamps build_info.json and creates git tag v{Version}.
 
 .PARAMETER Message
     Commit/tag message. Defaults to "Agience v{Version}".
@@ -43,8 +43,10 @@ param(
     [switch]$DryRun
 )
 
-# Note: Do NOT set $ErrorActionPreference = "Stop" globally — it causes
-# PowerShell to treat any stderr output from git as a terminating error.
+# Explicitly override any inherited ErrorActionPreference — git writes informational
+# messages to stderr which PowerShell treats as terminating errors under "Stop".
+# Real errors are detected via $LASTEXITCODE checks throughout this script.
+$ErrorActionPreference = "Continue"
 
 $PublicRemote = "public"
 $StagingBranch = "public-release-staging"
@@ -219,7 +221,7 @@ try {
         if ($PublicBranch -ne "main") {
             Write-Host "DRY RUN: Would tag as $TagName and push tag" -ForegroundColor Yellow
         } else {
-            Write-Host "DRY RUN: No tag (canary/main publish)" -ForegroundColor Yellow
+            Write-Host "DRY RUN: No tag (edge/main publish)" -ForegroundColor Yellow
         }
     } else {
         if ($CreateOrphan) {
@@ -240,9 +242,9 @@ try {
         }
 
         # Tags are only pushed for release/* branches (stable releases).
-        # Pushing to main produces a canary — no tag, no GitHub Release.
+        # Pushing to main produces an edge build — no tag, no GitHub Release.
         if ($PublicBranch -eq "main") {
-            Write-Host "  Skipping tag (main/canary publish). CI will build :canary images from branch push." -ForegroundColor DarkYellow
+            Write-Host "  Skipping tag (main/edge publish). CI will build :edge images from branch push." -ForegroundColor DarkYellow
             $Published = $true
         } else {
 
@@ -287,7 +289,10 @@ try {
     Write-Host ""
     Write-Host "Cleaning up..." -ForegroundColor Gray
     git checkout $OriginalBranch --force --quiet 2>&1 | Out-Null
-    git branch -D $StagingBranch 2>&1 | Out-Null
+    $stagingExists = "$(git branch --list $StagingBranch 2>&1)".Trim()
+    if ($stagingExists) {
+        git branch -D $StagingBranch 2>&1 | Out-Null
+    }
 
     # Keep local main's build_info version in sync with the published release.
     if ($Published -and $OriginalBranch -eq "main" -and $Version) {

@@ -5,9 +5,9 @@ name: Deploy suite
 #
 # Trigger chain:
 #   git push vX.Y.Z
-#     → build-and-push-ghcr.yml  (builds + pushes :latest :X.Y :X.Y.Z)
+#     → build-and-push-ghcr.yml  (builds + pushes :stable :X.Y :X.Y.Z)
 #       → deploy-suite.yml       (fires on workflow_run: completed + success)
-#         → agience-host-my release.yml  (docker compose pull + up with :latest)
+#         → agience-host-my release.yml  (docker compose pull + up with :stable)
 #
 # Requires:
 #   DEPLOY_TOKEN_MY — a PAT with `workflow` scope for Agience/agience-host-my.

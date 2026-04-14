@@ -232,6 +232,7 @@ jobs:
       - frontend
       - docs-links
     if: >-
+      github.repository != 'Agience/agience-core-private' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       (github.ref_name == 'main' || startsWith(github.ref_name, 'release/')) &&
       (github.ref_name == 'main' || needs.changes.outputs.publish == 'true' || github.event_name == 'workflow_dispatch')

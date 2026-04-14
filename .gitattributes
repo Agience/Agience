@@ -16,6 +16,8 @@ docker-compose.yml text eol=lf
 # Force LF for config files
 *.conf text eol=lf
 *.config text eol=lf
+Caddyfile text eol=lf
+*.caddy text eol=lf
 *.json text eol=lf
 *.yaml text eol=lf
 *.yml text eol=lf
