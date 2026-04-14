@@ -1,10 +1,10 @@
 # ──────────────────────────────────────────────────────────────────────
-# Agience — Local Install Script (Windows)
+# Agience — Plain Install Script (Windows)
 #
 # Stable images, no domain, no TLS. Runs at http://localhost:8080.
 #
 # Usage:
-#   irm https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/local/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/plain/install.ps1 | iex
 #
 # After install:
 #   agience up      start
@@ -22,7 +22,7 @@ $ErrorActionPreference = 'Stop'
 
 $InstallDir = if ($DataPath) { $DataPath } else { Join-Path $env:USERPROFILE '.agience' }
 $BinDir     = Join-Path $env:USERPROFILE '.agience\bin'
-$ComposeUrl = 'https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/local/docker-compose.yml'
+$ComposeUrl = 'https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/plain/docker-compose.yml'
 $OpenUrl    = 'http://localhost:8080'
 
 # ── Helpers ──────────────────────────────────────────────────────────

@@ -1,17 +1,17 @@
 #!/usr/bin/env sh
 # ──────────────────────────────────────────────────────────────────────
-# Agience — Canary Install Script (Linux / macOS)
+# Agience — Edge Install Script (Linux / macOS)
 #
-# One shot: pulls the latest canary images, starts Agience, opens your browser.
+# One shot: pulls the latest edge images, starts Agience, opens your browser.
 # No git clone, no build tools, no .env file required.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/canary/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/edge/install.sh | sh
 #
 # After install:
 #   agience up      start
 #   agience down    stop
-#   agience update  pull latest canary and restart
+#   agience update  pull latest edge and restart
 #   agience reset   wipe all data and start fresh
 # ──────────────────────────────────────────────────────────────────────
 set -e
@@ -21,7 +21,7 @@ set -e
 INSTALL_DIR="${HOME}/.agience"
 BIN_DIR="${HOME}/.local/bin"
 COMPOSE_FILE="docker-compose.yml"
-COMPOSE_URL="https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/canary/docker-compose.yml"
+COMPOSE_URL="https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/edge/docker-compose.yml"
 
 # ── Terminal colors ──────────────────────────────────────────────────
 
@@ -63,7 +63,7 @@ fi
 
 printf "\n"
 printf "${BOLD}  +--------------------------------------+${NC}\n"
-printf "${BOLD}  |        Agience -- Canary Install     |${NC}\n"
+printf "${BOLD}  |        Agience -- Edge Install       |${NC}\n"
 printf "${BOLD}  |        latest main build             |${NC}\n"
 printf "${BOLD}  +--------------------------------------+${NC}\n"
 printf "\n"
@@ -139,7 +139,7 @@ ok "Compose file downloaded"
 
 # ── Step 5: Pull Images ─────────────────────────────────────────────
 
-info "Pulling canary images (this may take a few minutes)..."
+info "Pulling edge images (this may take a few minutes)..."
 printf "\n"
 
 $COMPOSE_CMD pull
@@ -275,7 +275,7 @@ fi
 
 printf "\n"
 printf "${BOLD}${GREEN}  ╔══════════════════════════════════════╗${NC}\n"
-printf "${BOLD}${GREEN}  ║  Agience (canary) is running!        ║${NC}\n"
+printf "${BOLD}${GREEN}  ║  Agience (edge) is running!        ║${NC}\n"
 printf "${BOLD}${GREEN}  ╚══════════════════════════════════════╝${NC}\n"
 printf "\n"
 printf "  Open:      ${BOLD}http://localhost:5173${NC}\n"
@@ -287,7 +287,7 @@ printf "  ${BOLD}Commands:${NC}\n"
 printf "    agience up        start\n"
 printf "    agience down      stop\n"
 printf "    agience logs      watch logs\n"
-printf "    agience update    pull latest canary images and restart\n"
+printf "    agience update    pull latest edge images and restart\n"
 printf "    agience status    show running containers\n"
     printf "    agience reset     wipe all data and start fresh\n"
 if $PATH_UPDATED; then

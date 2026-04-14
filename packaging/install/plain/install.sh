@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────────────────
-# Agience — Local Install Script (Linux / macOS)
+# Agience — Plain Install Script (Linux / macOS)
 #
 # Stable images, no domain, no TLS. Runs at http://localhost:8080.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/local/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/plain/install.sh | sh
 #   bash install.sh
 #
 # After install:
@@ -19,7 +19,7 @@ set -euo pipefail
 INSTALL_DIR="${HOME}/.agience"
 BIN_DIR="${HOME}/.local/bin"
 COMPOSE_FILE="docker-compose.yml"
-COMPOSE_URL="https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/local/docker-compose.yml"
+COMPOSE_URL="https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/plain/docker-compose.yml"
 DOCKER_INSTALL_URL="https://get.docker.com"
 DOCKER_DESKTOP_MAC_URL="https://www.docker.com/products/docker-desktop/"
 OPEN_URL="http://localhost:8080"

@@ -1,16 +1,16 @@
 # ──────────────────────────────────────────────────────────────────────
-# Agience — Canary Install Script (Windows)
+# Agience — Edge Install Script (Windows)
 #
-# One shot: pulls the latest canary images, starts Agience, opens your browser.
+# One shot: pulls the latest edge images, starts Agience, opens your browser.
 # No git clone, no build tools, no .env file required.
 #
 # Usage:
-#   irm https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/canary/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/edge/install.ps1 | iex
 #
 # After install:
 #   agience up      start
 #   agience down    stop
-#   agience update  pull latest canary and restart
+#   agience update  pull latest edge and restart
 # ──────────────────────────────────────────────────────────────────────
 #Requires -Version 5.1
 Set-StrictMode -Version Latest
@@ -20,7 +20,7 @@ $ErrorActionPreference = 'Stop'
 
 $InstallDir = Join-Path $env:USERPROFILE '.agience'
 $BinDir     = Join-Path $InstallDir 'bin'
-$ComposeUrl = 'https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/canary/docker-compose.yml'
+$ComposeUrl = 'https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/edge/docker-compose.yml'
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -46,7 +46,7 @@ function Add-ToUserPath {
 
 Write-Host ""
 Write-Host "  +--------------------------------------+" -ForegroundColor Magenta
-Write-Host "  |        Agience -- Canary Install     |" -ForegroundColor Magenta
+Write-Host "  |        Agience -- Edge Install       |" -ForegroundColor Magenta
 Write-Host "  |        latest main build             |" -ForegroundColor Magenta
 Write-Host "  +--------------------------------------+" -ForegroundColor Magenta
 Write-Host ""
@@ -124,7 +124,7 @@ Write-Ok "Compose file downloaded"
 
 # ── Step 5: Pull Images ─────────────────────────────────────────────
 
-Write-Info "Pulling canary images (this may take a few minutes)..."
+Write-Info "Pulling edge images (this may take a few minutes)..."
 Write-Host ""
 
 Push-Location $InstallDir
@@ -267,7 +267,7 @@ if (-not $opened) {
 
 Write-Host ""
 Write-Host "  +--------------------------------------+" -ForegroundColor Green
-Write-Host "  |     Agience (canary) is running!     |" -ForegroundColor Green
+Write-Host "  |     Agience (edge) is running!     |" -ForegroundColor Green
 Write-Host "  +--------------------------------------+" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Open:     http://localhost:5173" -ForegroundColor White
@@ -279,7 +279,7 @@ Write-Host "  Commands:" -ForegroundColor White
 Write-Host "    agience up        start"
 Write-Host "    agience down      stop"
 Write-Host "    agience logs      watch logs"
-Write-Host "    agience update    pull latest canary images and restart"
+Write-Host "    agience update    pull latest edge images and restart"
 Write-Host "    agience status    show running containers"
 Write-Host "    agience reset     wipe all data and start fresh"
 Write-Host ""

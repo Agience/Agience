@@ -71,7 +71,7 @@ jobs:
       # -----------------------------------------------------------------
       # Tag matrix
       #
-      #   tag vX.Y.Z → :latest  :X.Y  :X.Y.Z
+      #   tag vX.Y.Z → :stable  :X.Y  :X.Y.Z
       #
       # Each image is pushed to both registries:
       #   agience/<image>:<tag>           (Docker Hub)
@@ -88,7 +88,7 @@ jobs:
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
           RELEASE_LINE="${VERSION%.*}"
-          TAGS=("latest" "$RELEASE_LINE" "$VERSION")
+          TAGS=("stable" "$RELEASE_LINE" "$VERSION")
 
           IMAGES=(agience-backend agience-frontend agience-servers agience-stream agience-init)
           OUTPUT_NAMES=(backend frontend servers stream init)

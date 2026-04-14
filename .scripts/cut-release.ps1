@@ -5,7 +5,7 @@
 .DESCRIPTION
     Validates you are on main, creates release/X.Y locally, stamps
     build_info.json with X.Y.0, commits, and pushes the branch.
-    CI will build :X.Y-rc images on push.
+    CI will build :stable-rc and :<X.Y>-rc-<sha7> images on push.
 
 .PARAMETER Version
     Minor version line to cut (X.Y - e.g. 0.3).
