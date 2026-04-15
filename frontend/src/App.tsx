@@ -11,9 +11,7 @@ import LoginProtected from './auth/LoginProtected';
 
 import Login from './pages/Login';
 import Privacy from './pages/Privacy';
-import Cookies from './pages/Cookies';
 import WorkspacePage from './pages/WorkspacePage';
-import CookieBanner from './components/common/CookieBanner';
 import Terms from './pages/Terms';
 import { WorkspaceProvider } from './context/workspace/WorkspaceProvider';
 import { CollectionsProvider } from './context/collections/CollectionsProvider';
@@ -143,7 +141,6 @@ function AppRoutes() {
         <Route path="/login" element={<Login />} />
         <Route path="/terms" element={<Terms />} />
         <Route path="/privacy" element={<Privacy />} />
-        <Route path="/cookies" element={<Cookies />} />
         <Route path="/auth/error" element={<Login />} />
         <Route
           path="/auth/callback"
@@ -217,7 +214,6 @@ export default function App() {
             <BrowserRouter>
               <GrantKeyCapture />
               <Toaster />
-              <CookieBanner />
               <KeyboardShortcutsDialog />
               <Suspense fallback={<Spinner />}>
                 <AppRoutes />

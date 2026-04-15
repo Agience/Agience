@@ -280,6 +280,14 @@ $COMPOSE_CMD up -d
 
 ok "Agience is running"
 
+# ── Read setup token ─────────────────────────────────────────────────
+
+SETUP_TOKEN=""
+TOKEN_FILE="${INSTALL_DIR}/.data/keys/setup.token"
+if [ -f "$TOKEN_FILE" ]; then
+    SETUP_TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null || sudo cat "$TOKEN_FILE" 2>/dev/null || true)
+fi
+
 # ── Step 9: Open browser ─────────────────────────────────────────────
 
 if command_exists xdg-open; then
@@ -298,6 +306,10 @@ printf "\n"
 printf "  Open:   ${OPEN_URL}\n"
 printf "  Data:   ${INSTALL_DIR}/.data/\n"
 printf "\n"
+if [ -n "$SETUP_TOKEN" ]; then
+    printf "  ${YELLOW}Setup:  ${SETUP_TOKEN}${NC}\n"
+    printf "\n"
+fi
 printf "  Commands:\n"
 printf "    agience up        start\n"
 printf "    agience down      stop\n"

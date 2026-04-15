@@ -12,74 +12,20 @@
 home.agience.ai {
     tls /run/keys/home.crt /run/keys/home.key
 
-    # Backend — all API routes
-    handle /auth/* {
-        reverse_proxy backend:8081
-    }
-    handle /artifacts/* {
-        reverse_proxy backend:8081
-    }
-    handle /agents/* {
-        reverse_proxy backend:8081
-    }
-    handle /events* {
+    # API — backend FastAPI (SSE requires flush_interval -1)
+    handle_path /api/* {
         reverse_proxy backend:8081 {
-            flush_interval -1  # required for SSE / WebSocket
+            flush_interval -1
         }
-    }
-    handle /grants/* {
-        reverse_proxy backend:8081
-    }
-    handle /api-keys/* {
-        reverse_proxy backend:8081
-    }
-    handle /secrets/* {
-        reverse_proxy backend:8081
-    }
-    handle /types/* {
-        reverse_proxy backend:8081
-    }
-    handle /mcp* {
-        reverse_proxy backend:8081
-    }
-    handle /platform/* {
-        reverse_proxy backend:8081
-    }
-    handle /setup/* {
-        reverse_proxy backend:8081
-    }
-    handle /relay/* {
-        reverse_proxy backend:8081
-    }
-    handle /server-credentials/* {
-        reverse_proxy backend:8081
-    }
-    handle /gate/* {
-        reverse_proxy backend:8081
-    }
-    handle /passkey/* {
-        reverse_proxy backend:8081
-    }
-    handle /otp/* {
-        reverse_proxy backend:8081
-    }
-    handle /inbound/* {
-        reverse_proxy backend:8081
-    }
-    handle /.well-known/* {
-        reverse_proxy backend:8081
-    }
-    handle /version {
-        reverse_proxy backend:8081
     }
 
     # Content — MinIO local storage
-    handle /content/* {
+    handle_path /content/* {
         reverse_proxy content:9000
     }
 
     # Streaming — SRS HTTP API and HLS playback
-    handle /stream/* {
+    handle_path /stream/* {
         reverse_proxy stream:1985
     }
 

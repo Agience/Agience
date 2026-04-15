@@ -210,6 +210,11 @@ Pop-Location
 
 Write-Ok "Agience is running"
 
+# ── Read setup token ─────────────────────────────────────────────────
+
+$tokenFile = Join-Path $InstallDir '.data\keys\setup.token'
+$SetupToken = if (Test-Path $tokenFile) { (Get-Content $tokenFile -Raw).Trim() } else { '' }
+
 # ── Step 8: Open browser ─────────────────────────────────────────────
 
 Start-Process 'https://home.agience.ai'
@@ -224,6 +229,10 @@ Write-Host ""
 Write-Host "  Open:   https://home.agience.ai" -ForegroundColor White
 Write-Host "  Data:   $InstallDir\.data\" -ForegroundColor Gray
 Write-Host ""
+if ($SetupToken) {
+    Write-Host "  Setup:  $SetupToken" -ForegroundColor Yellow
+    Write-Host ""
+}
 Write-Host "  Commands:" -ForegroundColor White
 Write-Host "    agience up        start"
 Write-Host "    agience down      stop"
