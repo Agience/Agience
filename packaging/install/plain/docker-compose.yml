@@ -186,8 +186,7 @@ services:
     restart: unless-stopped
 
   # ── Router — plain Caddy, HTTP only, no domain required ──────────────
-  # Serves on http://localhost:8080.
-  # No TLS cert, no agience-home image needed.
+  # Serves on http://localhost:8080.  
 
   caddy:
     image: caddy:alpine
@@ -215,25 +214,63 @@ configs:
   caddy_config:
     content: |
       :8080 {
-        handle /auth/* { reverse_proxy backend:8081 }
-        handle /artifacts/* { reverse_proxy backend:8081 }
-        handle /agents/* { reverse_proxy backend:8081 }
-        handle /events* { reverse_proxy backend:8081 }
-        handle /grants/* { reverse_proxy backend:8081 }
-        handle /api-keys/* { reverse_proxy backend:8081 }
-        handle /secrets/* { reverse_proxy backend:8081 }
-        handle /types/* { reverse_proxy backend:8081 }
-        handle /mcp* { reverse_proxy backend:8081 }
-        handle /platform/* { reverse_proxy backend:8081 }
-        handle /setup/* { reverse_proxy backend:8081 }
-        handle /relay/* { reverse_proxy backend:8081 }
-        handle /server-credentials/* { reverse_proxy backend:8081 }
-        handle /gate/* { reverse_proxy backend:8081 }
-        handle /passkey/* { reverse_proxy backend:8081 }
-        handle /otp/* { reverse_proxy backend:8081 }
-        handle /inbound/* { reverse_proxy backend:8081 }
-        handle /.well-known/* { reverse_proxy backend:8081 }
-        handle /version { reverse_proxy backend:8081 }
+        handle /auth/* {
+          reverse_proxy backend:8081
+        }
+        handle /artifacts/* {
+          reverse_proxy backend:8081
+        }
+        handle /agents/* {
+          reverse_proxy backend:8081
+        }
+        handle /events* {
+          reverse_proxy backend:8081
+        }
+        handle /grants/* {
+          reverse_proxy backend:8081
+        }
+        handle /api-keys/* {
+          reverse_proxy backend:8081
+        }
+        handle /secrets/* {
+          reverse_proxy backend:8081
+        }
+        handle /types/* {
+          reverse_proxy backend:8081
+        }
+        handle /mcp* {
+          reverse_proxy backend:8081
+        }
+        handle /platform/* {
+          reverse_proxy backend:8081
+        }
+        handle /setup/* {
+          reverse_proxy backend:8081
+        }
+        handle /relay/* {
+          reverse_proxy backend:8081
+        }
+        handle /server-credentials/* {
+          reverse_proxy backend:8081
+        }
+        handle /gate/* {
+          reverse_proxy backend:8081
+        }
+        handle /passkey/* {
+          reverse_proxy backend:8081
+        }
+        handle /otp/* {
+          reverse_proxy backend:8081
+        }
+        handle /inbound/* {
+          reverse_proxy backend:8081
+        }
+        handle /.well-known/* {
+          reverse_proxy backend:8081
+        }
+        handle /version {
+          reverse_proxy backend:8081
+        }
         handle /content/* {
           uri strip_prefix /content
           reverse_proxy content:9000

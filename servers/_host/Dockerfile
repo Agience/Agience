@@ -30,6 +30,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 # ── Shared auth module ────────────────────────────────────────────────────────
 COPY servers/_shared/agience_server_auth.py agience_server_auth.py
+COPY servers/_shared/artifact_helpers.py artifact_helpers.py
 
 # ── Server modules ────────────────────────────────────────────────────────────
 COPY servers/aria/server.py            aria_server.py
