@@ -4,7 +4,7 @@ from typing import List, Optional, Dict, Any, Callable
 from arango.database import StandardDatabase
 from api.agents.invoke import InvokeResult
 from api.agents.contracts import AgentRequest, AgentResponse
-from services.openai_helpers import create_chat_completion
+from services import llm_service
 
 logger = logging.getLogger(__name__)
 
@@ -73,14 +73,14 @@ def invoke(
     messages.append({"role": "user", "content": input or ""})
 
     try:
-        output, resp = create_chat_completion(
+        output, resp = llm_service.complete(
+            db, user_id, messages,
             model=model,
-            messages=messages,
             temperature=0.7,
             max_output_tokens=1024,
         )
     except Exception as e:
-        logger.error("OpenAI API error in agent_service.invoke", exc_info=e)
+        logger.error("LLM API error in agent_service.invoke", exc_info=e)
         raise
 
     # Record VU usage after successful invocation

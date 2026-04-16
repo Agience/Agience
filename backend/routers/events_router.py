@@ -148,23 +148,42 @@ def _parse_filter(raw: Any) -> event_bus.EventFilter:
     )
 
 
-def _event_visible_to(auth: AuthContext, event: event_bus.Event) -> bool:
+def _event_visible_to(
+    auth: AuthContext,
+    event: event_bus.Event,
+    owned_containers: Optional[set] = None,
+) -> bool:
     """ACL check: does the caller hold a `read` grant that reaches this event?
 
     Rules:
-    - If the event has no container and no artifact target, it's a platform
-      event; only users with any grant can see it.
-    - Otherwise, require `can_read` on the event's artifact_id or
-      container_id.
-    - Server / mcp-client principals see everything in their scope.
+    - If the event was produced by the authenticated user (actor_id match),
+      always visible.
+    - If the event targets a container the user owns (cached lookup), visible.
+    - If the user has pre-loaded grants, check grant permissions.
+    - Server / mcp-client principals see events they produced.
     """
+    user_id = getattr(auth, "user_id", None)
+
+    # Actor match: the user triggered this event — always visible.
+    if user_id and event.actor_id and str(user_id) == str(event.actor_id):
+        return True
+
+    # Ownership match: the event targets a container the user owns.
+    if user_id and event.container_id and owned_containers is not None:
+        if event.container_id in owned_containers:
+            return True
+
+    # Server / mcp-client principals without grants: match by principal_id.
     if not auth or not getattr(auth, "grants", None):
-        # Server / mcp-client principals may legitimately have no user grants
-        # but should still see events they produced. Filter them loosely by
-        # principal id match.
         principal = getattr(auth, "principal_id", None)
         if principal and event.actor_id and str(principal) == str(event.actor_id):
             return True
+        # For users with no grants and no actor/ownership match, deny.
+        # (JWT users with empty grants are handled by actor/ownership above.)
+        if user_id:
+            # User JWT without grants — actor and ownership checks already
+            # ran above; if neither matched, deny.
+            return False
         return False
 
     grants = list(auth.grants or [])
@@ -187,18 +206,42 @@ async def _pump_subscription(
     ws: WebSocket,
     auth: AuthContext,
     send_lock: asyncio.Lock,
+    arango_db: Any = None,
 ) -> None:
     """Forward events from a subscription's queue to the WebSocket.
 
     Applies the per-user ACL check before sending. Exits cleanly when the
     socket closes or the task is cancelled.
+
+    Container ownership is cached per WebSocket session so each container_id
+    only requires one DB lookup.
     """
+    owned_containers: set = set()
+
+    def _check_ownership(container_id: str) -> bool:
+        """Cache-through ownership check for a container."""
+        if container_id in owned_containers:
+            return True
+        if not arango_db or not auth.user_id:
+            return False
+        try:
+            doc = arango_db.collection("artifacts").get(container_id)
+            if doc and doc.get("created_by") == auth.user_id:
+                owned_containers.add(container_id)
+                return True
+        except Exception:
+            pass
+        return False
+
     try:
         while True:
             event = await sub.queue.get()
             if ws.client_state != WebSocketState.CONNECTED:
                 return
-            if not _event_visible_to(auth, event):
+            # Pre-populate ownership cache for this event's container.
+            if event.container_id and event.container_id not in owned_containers:
+                _check_ownership(event.container_id)
+            if not _event_visible_to(auth, event, owned_containers):
                 continue
             msg = {
                 "event": event.name,
@@ -217,8 +260,12 @@ async def _pump_subscription(
         return
 
 
-async def _authenticate_ws(ws: WebSocket) -> Optional[AuthContext]:
-    """Authenticate a WebSocket connection via Bearer header or ?access_token query param."""
+async def _authenticate_ws(ws: WebSocket) -> tuple:
+    """Authenticate a WebSocket connection via Bearer header or ?access_token query param.
+
+    Returns (AuthContext, arango_db) on success, or (None, None) if auth
+    fails (the socket is closed with an appropriate code).
+    """
     token: Optional[str] = None
     authorization = ws.headers.get("authorization") or ""
     if authorization.startswith("Bearer "):
@@ -227,23 +274,23 @@ async def _authenticate_ws(ws: WebSocket) -> Optional[AuthContext]:
         token = ws.query_params.get("access_token")
     if not token:
         await ws.close(code=4401, reason="Missing bearer token")
-        return None
+        return None, None
 
     try:
         arango_db = next(get_arango_db())
     except Exception as exc:
         logger.error("events WS could not acquire db session: %s", exc)
         await ws.close(code=1011, reason="Database unavailable")
-        return None
+        return None, None
 
     try:
         auth = resolve_auth(token, arango_db, request=None)
     except Exception as exc:
         logger.info("events WS auth rejected: %s", exc)
         await ws.close(code=4401, reason="Invalid token")
-        return None
+        return None, None
 
-    return auth
+    return auth, arango_db
 
 
 @router.websocket("/events")
@@ -253,7 +300,7 @@ async def events_ws(websocket: WebSocket) -> None:
     Accepts JSON messages matching the protocol documented at the top of
     this module.
     """
-    auth = await _authenticate_ws(websocket)
+    auth, arango_db = await _authenticate_ws(websocket)
     if auth is None:
         return
 
@@ -300,7 +347,7 @@ async def events_ws(websocket: WebSocket) -> None:
                 queue = await event_bus.subscribe_filtered(event_filter)
                 sub = _Subscription(client_id, event_filter, queue)
                 sub.task = asyncio.create_task(
-                    _pump_subscription(sub, websocket, auth, send_lock)
+                    _pump_subscription(sub, websocket, auth, send_lock, arango_db)
                 )
                 subscriptions[client_id] = sub
 

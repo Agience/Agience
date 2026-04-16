@@ -1,5 +1,4 @@
 import { extractInformation } from '../../../api/agent';
-import { post } from '../../../api/api';
 import { PaletteState } from '../palette.types';
 import type { Artifact } from '../../workspace/workspace.types';
 
@@ -76,21 +75,21 @@ export async function agentHandler(state: PaletteState, ctx: AgentRunContext): P
       });
     }
   } else {
-    // Generic tool invocation via POST /agents/invoke.
-    const res = await post('/agents/invoke', {
-      operator: toolName,
-      workspace_id: ctx.workspaceId,
-    });
+    // Generic tool dispatch without a known server is ambiguous under the
+    // artifact-invoke model. The tool name alone doesn't tell us which
+    // server owns it. Tool discovery (e.g. search via discover_tools) should
+    // return a server id; once the palette UI surfaces that, generic
+    // invocation can POST /artifacts/{server_id}/invoke with body.name=tool.
     outputArtifacts.push({
       id: 'palette-output',
-      content: `Ran operator: ${toolName}`,
+      content:
+        `Generic operator dispatch without a server id is not supported yet.\n` +
+        `Selected tool: ${toolName}.\n` +
+        `Use extract_information, or pick a tool from tool discovery (which knows the owning server).`,
       context: JSON.stringify({
-        content_type: 'application/json',
-        type: 'palette-output',
-        title: 'Palette output',
-        generatedBy: 'palette',
-        tool: toolName,
-        result: res,
+        content_type: 'text/plain',
+        type: 'palette-error',
+        title: 'Palette',
       }),
       state: 'draft',
     });

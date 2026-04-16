@@ -176,7 +176,12 @@ try {
         if (Test-Path $path) {
             Write-Host "  Removing: $path" -ForegroundColor DarkYellow
             git rm -rf --quiet $path 2>&1 | Out-Null
-            if (Test-Path $path) {
+            # Only delete untracked/gitignored filesystem content if it's NOT .claude
+            # .claude/worktrees/ contains git worktree checkouts with potentially
+            # uncommitted work. Deleting them is destructive and irreversible.
+            # The git add -A + git rm --cached safety net below prevents any
+            # excluded path from leaking into the public commit regardless.
+            if ((Test-Path $path) -and ($path -ne ".claude")) {
                 Remove-Item -Recurse -Force $path -ErrorAction SilentlyContinue
             }
         }

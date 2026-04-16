@@ -69,6 +69,36 @@ def resolve_ref(
     return _walk_dict(artifact, parts)
 
 
+def _resolve_input_mapping(mapping: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolve ``$.field`` and ``$.field[N]`` refs in *mapping* against *params*.
+
+    Simpler than :func:`resolve_ref` — used for the ``context.run.input_mapping``
+    block on a transform artifact, where refs point into a flat params dict
+    rather than the artifact structure. Non-string values and strings not
+    starting with ``$.`` are passed through unchanged. Keys that resolve to
+    ``None`` are omitted.
+    """
+    result: Dict[str, Any] = {}
+    for key, value in mapping.items():
+        if isinstance(value, str) and value.startswith("$."):
+            path = value[2:]
+            if "[" in path:
+                field, rest = path.split("[", 1)
+                try:
+                    idx = int(rest.rstrip("]"))
+                except ValueError:
+                    idx = 0
+                raw = params.get(field)
+                resolved = raw[idx] if isinstance(raw, list) and len(raw) > idx else None
+            else:
+                resolved = params.get(path)
+            if resolved is not None:
+                result[key] = resolved
+        else:
+            result[key] = value
+    return result
+
+
 def _walk_dict(root: Any, parts: list[str]) -> Any:
     """Walk a dict (or JSON-string-containing-dict) along a dotted path."""
     cur: Any = root
@@ -169,10 +199,24 @@ def get_native_target(name: str) -> Optional[Callable[..., Awaitable[Any]]]:
 
 @dataclass
 class McpToolHandler:
-    """Dispatch kind `mcp_tool` — call an MCP server tool.
+    """Dispatch kind ``mcp_tool`` — call an MCP server tool.
 
-    `op_spec.dispatch` must contain `server_ref` and `tool_ref` (literals or
-    `$.path.to.field` refs into the artifact doc).
+    ``op_spec.dispatch`` provides:
+
+    - ``server_ref`` + ``tool_ref`` — literals or ``$.path`` refs into the
+      artifact. Used for per-artifact routing: e.g. a transform carries
+      its own server/tool in ``context.run``, so two artifacts of the same
+      type can route to two different servers.
+
+    - ``orchestrator_server`` + ``orchestrator_tool`` (optional) — used
+      when the primary refs resolve to null. Lets a type declare a default
+      orchestrator for its invoke op. Example: a transform with
+      ``run.type == "workflow"`` has no direct ``run.server``, so the
+      transform type declares ``orchestrator_server: verso`` +
+      ``orchestrator_tool: execute_transform``.
+
+    If neither primary nor orchestrator refs resolve, the handler raises
+    ``ValueError``.
     """
 
     kind: str = "mcp_tool"
@@ -185,13 +229,27 @@ class McpToolHandler:
         ctx: Any,
     ) -> Any:
         dispatch = op_spec.dispatch or {}
+
+        # Primary: per-artifact routing. Resolves from the artifact itself
+        # so the caller doesn't know or care which server handles it.
         server_id = resolve_ref(dispatch.get("server_ref"), artifact, body=body, ctx=ctx)
         tool_name = resolve_ref(dispatch.get("tool_ref"), artifact, body=body, ctx=ctx)
 
+        # Orchestrator: used for run types that don't declare a direct
+        # server/tool (e.g. workflow, llm, transform-ref). These still
+        # flow through an MCP tool call — just a different one owned by
+        # the orchestrating server.
+        if not server_id or not tool_name:
+            server_id = dispatch.get("orchestrator_server") or server_id
+            tool_name = dispatch.get("orchestrator_tool") or tool_name
+
         if not server_id or not tool_name:
             raise ValueError(
-                f"mcp_tool dispatch could not resolve server ({dispatch.get('server_ref')!r}) "
-                f"or tool ({dispatch.get('tool_ref')!r}) from artifact/body/ctx"
+                f"mcp_tool dispatch could not resolve server "
+                f"({dispatch.get('server_ref')!r} / orchestrator_server="
+                f"{dispatch.get('orchestrator_server')!r}) or tool "
+                f"({dispatch.get('tool_ref')!r} / orchestrator_tool="
+                f"{dispatch.get('orchestrator_tool')!r}) from artifact/body/ctx"
             )
 
         # Lazy import to avoid circular dependency on mcp_service
@@ -204,7 +262,6 @@ class McpToolHandler:
         # to the tool's expected parameter names (e.g. artifact_id).
         input_mapping = resolve_ref("$.context.run.input_mapping", artifact)
         if isinstance(input_mapping, dict) and input_mapping:
-            from agents.transform_executor import _resolve_input_mapping
             # Build a flat params dict from the invoke body for mapping resolution
             mapping_source: Dict[str, Any] = {}
             if isinstance(body, dict):

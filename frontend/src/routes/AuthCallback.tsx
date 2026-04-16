@@ -4,6 +4,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { postForm, post } from '../api/api';
 import { getRuntimeConfig } from '../config/runtime';
 import { useAuth } from '../hooks/useAuth';
+import { postLoginRedirectTarget } from '../auth/postLoginRedirect';
 
 const { clientId: CLIENT_ID } = getRuntimeConfig();
 
@@ -71,10 +72,13 @@ const AuthCallback: React.FC = () => {
         localStorage.removeItem('pkce_state');
         localStorage.removeItem('pkce_verifier');
 
-        // Persist token and do full page load to cleanly initialize auth state
+        // Persist token and do full page load to cleanly initialize auth state.
+        // If there's a pending invite token, send the user to the claim page
+        // so it can finish accepting; otherwise go home.
         localStorage.setItem('access_token', access_token);
-        console.log('[AuthCallback] token stored, redirecting to /');
-        window.location.href = '/';
+        const target = postLoginRedirectTarget();
+        console.log('[AuthCallback] token stored, redirecting to', target);
+        window.location.href = target;
       })
       .catch((err) => {
         console.error('Token exchange failed:', err);

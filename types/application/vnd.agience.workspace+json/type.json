@@ -5,6 +5,49 @@
     "application/json"
   ],
   "description": "Agience Workspace (container)",
+  "context_schema": {
+    "bindings": {
+      "type": "object",
+      "description": "Named role bindings linking this workspace to other artifacts.",
+      "properties": {
+        "memory": {
+          "type": "object",
+          "description": "Collection used as persistent memory for the workspace.",
+          "properties": { "artifact_id": { "type": "string" } },
+          "expected_content_type": "application/vnd.agience.collection+json"
+        },
+        "tools": {
+          "type": "object",
+          "description": "Collection of mcp-server+json artifacts providing tool surfaces.",
+          "properties": { "artifact_id": { "type": "string" } },
+          "expected_content_type": "application/vnd.agience.collection+json"
+        },
+        "resources": {
+          "type": "object",
+          "description": "Collection of artifacts available as static context for transforms.",
+          "properties": { "artifact_id": { "type": "string" } },
+          "expected_content_type": "application/vnd.agience.collection+json"
+        },
+        "ask_prompt": {
+          "type": "object",
+          "description": "Single prompt or chat artifact used by the ask tool.",
+          "properties": { "artifact_id": { "type": "string" } }
+        },
+        "engagement_channels": {
+          "type": "object",
+          "description": "Collection of channel adapters for human engagement.",
+          "properties": { "artifact_id": { "type": "string" } },
+          "expected_content_type": "application/vnd.agience.collection+json"
+        },
+        "target_collections": {
+          "type": "object",
+          "description": "Collections that new artifacts in this workspace are linked to at creation time.",
+          "properties": { "artifact_ids": { "type": "array", "items": { "type": "string" } } },
+          "cardinality": "multi"
+        }
+      }
+    }
+  },
   "operations": {
     "create": {
       "enabled": true,

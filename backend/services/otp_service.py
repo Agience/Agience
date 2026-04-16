@@ -85,11 +85,14 @@ async def request_otp(db: StandardDatabase, email: str) -> bool:
 
 
 def verify_otp(db: StandardDatabase, email: str, code: str) -> Optional[str]:
-    """
-    Verify an OTP code for an email address.
+    """Verify an OTP code for an email address.
 
     Returns the person_id on success, None on failure.
     Consumes the code on success (marks as used).
+
+    **Auto-creates the person** if the email is unknown, mirroring the OIDC
+    login flow (``get_or_create_user_by_oidc_identity``). Access-control gate
+    (``is_person_allowed``) is enforced inside ``get_or_create_user_by_email``.
     """
     now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -103,14 +106,18 @@ def verify_otp(db: StandardDatabase, email: str, code: str) -> Optional[str]:
         if _verify_code_hash(code, otp["code_hash"]):
             arango_ws.mark_otp_used(db, otp_id)
 
-            # Look up the person
-            person = arango_ws.get_person_by_email(db, email)
-            if person:
-                logger.info("OTP verified for %s", email)
-                return person["id"]
-            else:
-                logger.warning("OTP verified but no person found for %s", email)
+            # Look up or create the person. Aligns with OIDC auto-create so
+            # invite links work for first-time users who sign in via OTP.
+            from services.person_service import get_or_create_user_by_email
+            try:
+                person = get_or_create_user_by_email(db, email)
+            except (ValueError, PermissionError) as exc:
+                logger.warning(
+                    "OTP verified but person creation denied for %s: %s", email, exc
+                )
                 return None
+            logger.info("OTP verified for %s", email)
+            return person.id
 
     logger.warning("OTP verification failed for %s", email)
     return None

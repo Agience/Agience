@@ -144,9 +144,9 @@ def _safe_parse_context(context_json: Optional[str]) -> Dict[str, Any]:
         return {}
 
 
-def _emit_event(collection_id: str, name: str, payload: dict) -> None:
+def _emit_event(collection_id: str, name: str, payload: dict, *, actor_id: Optional[str] = None) -> None:
     try:
-        event_bus.emit_artifact_event_sync(collection_id, name, payload)
+        event_bus.emit_artifact_event_sync(collection_id, name, payload, actor_id=actor_id)
     except Exception:
         logger.debug("event bus emit failed", exc_info=True)
 
@@ -352,13 +352,25 @@ def _user_can_read_collection(
 def _resolve_binding_from(
     bindings: Dict[str, Any], role: str,
 ) -> Optional[str]:
-    """Extract ``collection_id`` for *role* from a bindings dict, or ``None``."""
+    """Extract the bound artifact id for *role* from a bindings dict, or ``None``."""
     entry = bindings.get(role)
     if isinstance(entry, dict):
-        cid = entry.get("collection_id")
-        if isinstance(cid, str) and cid:
-            return cid
+        aid = entry.get("artifact_id")
+        if isinstance(aid, str) and aid:
+            return aid
     return None
+
+
+def _resolve_binding_multi_from(
+    bindings: Dict[str, Any], role: str,
+) -> List[str]:
+    """Extract a list of bound artifact ids for a multi-valued *role*."""
+    entry = bindings.get(role)
+    if isinstance(entry, dict):
+        ids = entry.get("artifact_ids")
+        if isinstance(ids, list):
+            return [i for i in ids if isinstance(i, str) and i]
+    return []
 
 
 def resolve_binding(
@@ -372,7 +384,7 @@ def resolve_binding(
 ) -> Optional[str]:
     """Resolve a binding role through the cascade: step → transform → workspace.
 
-    Returns the ``collection_id`` of the first accessible binding found, or
+    Returns the artifact id of the first accessible binding found, or
     ``None`` if the role is unbound at every level.
     """
     # 1. Step-level
@@ -405,8 +417,8 @@ def resolve_all_bindings(
 ) -> Dict[str, str]:
     """Resolve all binding roles through the cascade.
 
-    Returns ``{role: collection_id}`` for every role that resolves to an
-    accessible collection.  Roles where the user lacks access are omitted.
+    Returns ``{role: artifact_id}`` for every role that resolves to an
+    accessible artifact.  Roles where the user lacks access are omitted.
     """
     ws_context = get_workspace_context(db, user_id, workspace_id)
 
@@ -434,6 +446,103 @@ def resolve_all_bindings(
             result[role] = cid
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Workspace Bindings — Multi-valued Resolution
+# ---------------------------------------------------------------------------
+
+# Known binding roles and their cardinality.
+SINGLE_BINDING_ROLES = {"memory", "tools", "resources", "ask_prompt", "engagement_channels"}
+MULTI_BINDING_ROLES = {"target_collections"}
+KNOWN_BINDING_ROLES = SINGLE_BINDING_ROLES | MULTI_BINDING_ROLES
+
+
+def resolve_binding_multi(
+    db: StandardDatabase,
+    user_id: str,
+    workspace_id: str,
+    role: str,
+    *,
+    transform_context: Optional[Dict[str, Any]] = None,
+    step_context: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    """Resolve a multi-valued binding role through the cascade.
+
+    Returns a list of artifact ids for which the user has read access.
+    """
+    for ctx in (step_context, transform_context):
+        ids = _resolve_binding_multi_from(_extract_bindings(ctx), role)
+        accessible = [i for i in ids if _user_can_read_collection(db, user_id, i)]
+        if accessible:
+            return accessible
+
+    ws_context = get_workspace_context(db, user_id, workspace_id)
+    ids = _resolve_binding_multi_from(_extract_bindings(ws_context), role)
+    return [i for i in ids if _user_can_read_collection(db, user_id, i)]
+
+
+# ---------------------------------------------------------------------------
+# Workspace Bindings — Set / Clear
+# ---------------------------------------------------------------------------
+
+def set_binding(
+    db: StandardDatabase,
+    user_id: str,
+    workspace_id: str,
+    role: str,
+    *,
+    artifact_id: Optional[str] = None,
+    artifact_ids: Optional[List[str]] = None,
+) -> dict:
+    """Set a workspace binding for *role*.
+
+    Single-valued roles accept ``artifact_id``; multi-valued roles accept
+    ``artifact_ids``.  Raises ``ValueError`` on unknown role or cardinality
+    mismatch.  Raises ``HTTPException(403)`` if the caller cannot update.
+    """
+    if role not in KNOWN_BINDING_ROLES:
+        raise ValueError(f"Unknown binding role: {role}")
+
+    if role in MULTI_BINDING_ROLES:
+        if artifact_id is not None or artifact_ids is None:
+            raise ValueError(f"Multi-valued role '{role}' requires artifact_ids, not artifact_id")
+        value: Dict[str, Any] = {"artifact_ids": artifact_ids}
+    else:
+        if artifact_ids is not None or artifact_id is None:
+            raise ValueError(f"Single-valued role '{role}' requires artifact_id, not artifact_ids")
+        value = {"artifact_id": artifact_id}
+
+    ctx = get_workspace_context(db, user_id, workspace_id)
+    bindings = ctx.setdefault("bindings", {})
+    bindings[role] = value
+    update_workspace_context(db, user_id, workspace_id, ctx)
+
+    event_bus.emit("workspace.binding.set", {
+        "workspace_id": workspace_id,
+        "role": role,
+        "binding": value,
+    })
+    return value
+
+
+def clear_binding(
+    db: StandardDatabase,
+    user_id: str,
+    workspace_id: str,
+    role: str,
+) -> None:
+    """Remove the binding for *role* from the workspace context."""
+    ctx = get_workspace_context(db, user_id, workspace_id)
+    bindings = ctx.get("bindings")
+    if isinstance(bindings, dict) and role in bindings:
+        del bindings[role]
+        update_workspace_context(db, user_id, workspace_id, ctx)
+
+    event_bus.emit("workspace.binding.cleared", {
+        "workspace_id": workspace_id,
+        "role": role,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -534,6 +643,39 @@ def _store_content_in_s3(
     return content_key, ""
 
 
+def _link_to_target_collections(
+    db: StandardDatabase,
+    user_id: str,
+    workspace_id: str,
+    artifact: ArtifactEntity,
+) -> None:
+    """Create ``collection_artifacts`` edges to each target collection bound to the workspace.
+
+    Skips silently (logs at INFO) for any target the caller cannot add to.
+    """
+    target_ids = resolve_binding_multi(db, user_id, workspace_id, "target_collections")
+    for target_id in target_ids:
+        try:
+            # Check the user has at least read (access proxy for "can_add") on the target.
+            if not _user_can_read_collection(db, user_id, target_id):
+                logger.info(
+                    "Skipping target_collection link: user %s lacks access to %s",
+                    user_id, target_id,
+                )
+                continue
+            arango.add_artifact_to_collection(db, target_id, artifact.root_id)
+            event_bus.emit("workspace.target_collection.linked", {
+                "workspace_id": workspace_id,
+                "target_collection_id": target_id,
+                "artifact_id": artifact.id,
+            })
+        except Exception:
+            logger.info(
+                "Failed to link artifact %s to target_collection %s",
+                artifact.id, target_id, exc_info=True,
+            )
+
+
 def create_workspace_artifact(
     db: StandardDatabase,
     user_id: str,
@@ -586,6 +728,10 @@ def create_workspace_artifact(
         order_key = after_key(arango.get_last_order_key(db, workspace_id))
     arango.add_artifact_to_collection(db, workspace_id, artifact.root_id, order_key)
 
+    # Wire target_collections binding: create collection_artifacts edges to
+    # each target collection so the draft artifact is associated immediately.
+    _link_to_target_collections(db, user_id, workspace_id, artifact)
+
     if enqueue_index:
         try:
             from search.ingest.pipeline_unified import enqueue_index_artifact
@@ -596,7 +742,7 @@ def create_workspace_artifact(
     if dispatch_handlers:
         _dispatch_handlers(db, user_id, workspace_id, "artifact_created", artifact)
 
-    _emit_event(workspace_id, "artifact.created", {"artifact": artifact.to_dict()})
+    _emit_event(workspace_id, "artifact.created", {"artifact": artifact.to_dict()}, actor_id=user_id)
     return artifact
 
 
@@ -695,7 +841,7 @@ def update_artifact(
         target.modified_time = _now_iso()
         if arango.update_artifact(db, target) is None:
             raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Failed to persist artifact update")
-        _emit_event(workspace_id, "artifact.updated", {"artifact": target.to_dict()})
+        _emit_event(workspace_id, "artifact.updated", {"artifact": target.to_dict()}, actor_id=user_id)
         return target
 
     if target.state == ArtifactEntity.STATE_ARCHIVED and state and state != ArtifactEntity.STATE_ARCHIVED:
@@ -704,7 +850,7 @@ def update_artifact(
         target.modified_time = _now_iso()
         if arango.update_artifact(db, target) is None:
             raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Failed to persist artifact update")
-        _emit_event(workspace_id, "artifact.updated", {"artifact": target.to_dict()})
+        _emit_event(workspace_id, "artifact.updated", {"artifact": target.to_dict()}, actor_id=user_id)
         return target
 
     if target.state == ArtifactEntity.STATE_ARCHIVED:
@@ -754,7 +900,7 @@ def update_artifact(
     if dispatch_handlers:
         _dispatch_handlers(db, user_id, workspace_id, "artifact_updated", target)
 
-    _emit_event(workspace_id, "artifact.updated", {"artifact": target.to_dict()})
+    _emit_event(workspace_id, "artifact.updated", {"artifact": target.to_dict()}, actor_id=user_id)
     return target
 
 
@@ -791,7 +937,7 @@ def delete_artifact(
         logger.debug("search delete failed", exc_info=True)
 
     _dispatch_handlers(db, user_id, workspace_id, "artifact_deleted", artifact)
-    _emit_event(workspace_id, "artifact.deleted", {"artifact_id": artifact_id})
+    _emit_event(workspace_id, "artifact.deleted", {"artifact_id": artifact_id}, actor_id=user_id)
 
 
 def remove_artifact_from_workspace(
@@ -832,7 +978,7 @@ def remove_artifact_from_workspace(
         except Exception:
             logger.debug("search delete failed", exc_info=True)
 
-    _emit_event(workspace_id, "artifact.deleted", {"artifact_id": artifact_id})
+    _emit_event(workspace_id, "artifact.deleted", {"artifact_id": artifact_id}, actor_id=user_id)
     return artifact or arango.get_artifact(db, root_id) or ArtifactEntity(id=root_id, root_id=root_id)
 
 
@@ -870,7 +1016,7 @@ def revert_artifact(
         logger.debug("reindex failed", exc_info=True)
 
     _dispatch_handlers(workspace_db, user_id, workspace_id, "artifact_updated", committed)
-    _emit_event(workspace_id, "artifact.updated", {"artifact": committed.to_dict()})
+    _emit_event(workspace_id, "artifact.updated", {"artifact": committed.to_dict()}, actor_id=user_id)
     return committed
 
 
@@ -922,8 +1068,8 @@ def move_artifact_between_workspaces(
     order_key = after_key(arango.get_last_order_key(db, target_workspace_id))
     arango.add_artifact_to_collection(db, target_workspace_id, artifact.root_id, order_key)
 
-    _emit_event(source_workspace_id, "artifact.deleted", {"artifact_id": artifact_id})
-    _emit_event(target_workspace_id, "artifact.created", {"artifact": artifact.to_dict()})
+    _emit_event(source_workspace_id, "artifact.deleted", {"artifact_id": artifact_id}, actor_id=user_id)
+    _emit_event(target_workspace_id, "artifact.created", {"artifact": artifact.to_dict()}, actor_id=user_id)
     return artifact
 
 
@@ -1105,7 +1251,7 @@ def commit_workspace_to_collections(
         logger.debug("post-commit reindex failed", exc_info=True)
 
     for d in drafts:
-        _emit_event(workspace_id, "artifact.updated", {"artifact": d.to_dict()})
+        _emit_event(workspace_id, "artifact.updated", {"artifact": d.to_dict()}, actor_id=user_id)
 
     updated_dicts = [d.to_dict() for d in drafts]
     return WorkspaceCommitResponse(
@@ -1307,7 +1453,7 @@ def update_upload_status(
             db, user_id, workspace_id, upload_id,
             context=_ensure_json_str(ctx),
         )
-        _emit_event(workspace_id, "upload.complete", {"artifact": result.to_dict()})
+        _emit_event(workspace_id, "upload.complete", {"artifact": result.to_dict()}, actor_id=user_id)
         return result
 
     raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid status")

@@ -113,35 +113,22 @@ def _content_type_to_rel_folder(content_type: str) -> Optional[Path]:
 
 
 def _find_type_folder(roots: Iterable[Path], content_type: str) -> Optional[Tuple[Path, str]]:
-    """Return (folder_path, source_label) for the single registered definition.
+    """Return (folder_path, source_label) for the highest-priority definition.
 
-    Each content type must be registered in exactly one root. If two or more
-    roots declare the same type the registration is ambiguous — this is a
-    configuration error and resolution fails so the problem is surfaced early
-    rather than silently resolved by alphabetical ordering.
+    Root ordering from ``get_types_roots()`` defines the priority:
+    extra roots > builtin ``types/`` > server ``ui/`` overlays.  When a
+    builtin type skeleton also has a server viewer overlay, the builtin
+    definition wins — this is the expected configuration, not an error.
     """
     rel = _content_type_to_rel_folder(content_type)
     if rel is None:
         return None
 
-    matches: List[Tuple[Path, str]] = []
     for root in roots:
         candidate = root / rel
         if candidate.exists() and candidate.is_dir():
-            matches.append((candidate, str(candidate)))
+            return (candidate, str(candidate))
 
-    if len(matches) == 0:
-        return None
-    if len(matches) == 1:
-        return matches[0]
-
-    paths = ", ".join(str(m[0]) for m in matches)
-    logger.error(
-        "Type '%s' is registered in multiple roots — this is a configuration error. "
-        "Each type must have exactly one definition. Conflicting locations: %s",
-        content_type,
-        paths,
-    )
     return None
 
 

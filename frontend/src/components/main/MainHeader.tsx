@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { FiMoon, FiSun, FiUser, FiChevronDown, FiSettings } from 'react-icons/fi';
-import { HelpCircle, MessageCircle, Send } from 'lucide-react';
+import { HelpCircle, Link2, MessageCircle, Send, Share2 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { useWorkspace } from '../../hooks/useWorkspace';
 import { useWorkspaces } from '@/hooks/useWorkspaces';
@@ -11,8 +11,10 @@ import { IconButton } from '@/components/ui/icon-button';
 import SettingsModal from '../modals/SettingsModal';
 import { formatShortcutCombo } from '@/context/shortcuts/shortcut-utils';
 import HelpDialog from '../modals/HelpDialog';
+import { ShareDialog } from '../common/ShareDialog';
 import { CHAT_CONTENT_TYPE } from '@/utils/content-type';
 import { useUpgradePrompt } from '@/hooks/useUpgradePrompt';
+import { getArtifact } from '@/api/artifacts';
 
 type SettingsSection = 'profile' | 'general' | 'llm-keys' | 'billing' | 'demo-data';
 
@@ -46,6 +48,7 @@ export default function HeaderBar({
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [showShare, setShowShare] = useState(false);
 
   // Internal section override — used when agience:open-settings event fires
   const [eventSection, setEventSection] = useState<SettingsSection | undefined>(undefined);
@@ -150,6 +153,16 @@ export default function HeaderBar({
     }
   }, [quickAddText, createArtifact, activeWorkspaceId, onArtifactCreated]);
 
+  const handleOpenBindings = useCallback(async () => {
+    if (!activeWorkspaceId || !onArtifactCreated) return;
+    try {
+      const wsArtifact = await getArtifact(activeWorkspaceId);
+      onArtifactCreated(wsArtifact);
+    } catch (err) {
+      console.error('Failed to open bindings:', err);
+    }
+  }, [activeWorkspaceId, onArtifactCreated]);
+
   return (
     <header className="flex items-center h-16 bg-white border-b border-gray-200 z-20">
       {/* Left Section: Dynamic width matching sidebar */}
@@ -194,6 +207,32 @@ export default function HeaderBar({
 
       {/* Right Section: Actions */}
       <div className="flex items-center gap-2 pr-4 flex-shrink-0">
+        {/* Bindings — active workspace only */}
+        {activeWorkspaceId && (
+          <IconButton
+            size="lg"
+            variant="ghost"
+            onClick={handleOpenBindings}
+            title="Workspace bindings"
+            aria-label="Open workspace bindings"
+          >
+            <Link2 />
+          </IconButton>
+        )}
+
+        {/* Share — active workspace only */}
+        {activeWorkspaceId && (
+          <IconButton
+            size="lg"
+            variant="ghost"
+            onClick={() => setShowShare(true)}
+            title="Share this workspace"
+            aria-label="Share workspace"
+          >
+            <Share2 />
+          </IconButton>
+        )}
+
         {/* Help */}
         <IconButton
           size="lg"
@@ -276,6 +315,14 @@ export default function HeaderBar({
         onClose={() => setShowHelp(false)}
         defaultTab="glossary"
       />
+
+      {activeWorkspaceId && (
+        <ShareDialog
+          open={showShare}
+          onOpenChange={setShowShare}
+          workspaceId={activeWorkspaceId}
+        />
+      )}
     </header>
   );
 }

@@ -352,6 +352,17 @@ def create_server_app() -> Any:
 
 
 def streamable_http_app() -> Any:
+    """Wrap the MCP ASGI app with optional operator token extraction.
+
+    Auth is permissive at the transport level — if a valid operator JWT is
+    present it is verified and stored in ``_CURRENT_OPERATOR_CLAIMS``;
+    otherwise the request proceeds without claims.  Individual tools gate
+    access via ``_current_operator_claims()`` which raises if claims are
+    absent.
+
+    This matches the other persona servers' pattern and allows MCP protocol
+    calls (e.g. type discovery at startup) to succeed without a token.
+    """
     inner_app = mcp.streamable_http_app()
 
     async def app(scope: dict[str, Any], receive: Any, send: Any) -> None:
@@ -360,20 +371,17 @@ def streamable_http_app() -> Any:
             return
 
         token = _extract_bearer_token(scope)
-        if not token:
-            await _send_unauthorized(send, "Missing or invalid Bearer token.")
-            return
+        if token:
+            claims = _verify_operator_token(token)
+            if claims:
+                context_token = _CURRENT_OPERATOR_CLAIMS.set(claims)
+                try:
+                    await inner_app(scope, receive, send)
+                finally:
+                    _CURRENT_OPERATOR_CLAIMS.reset(context_token)
+                return
 
-        claims = _verify_operator_token(token)
-        if not claims:
-            await _send_unauthorized(send, "Bearer token verification failed.")
-            return
-
-        context_token = _CURRENT_OPERATOR_CLAIMS.set(claims)
-        try:
-            await inner_app(scope, receive, send)
-        finally:
-            _CURRENT_OPERATOR_CLAIMS.reset(context_token)
+        await inner_app(scope, receive, send)
 
     return app
 

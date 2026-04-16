@@ -19,6 +19,7 @@ import { getPasskeyLoginOptions, completePasskeyLogin, requestOTP, verifyOTP } f
 import { toast } from 'sonner'
 import AuthLayout from '../components/layout/AuthLayout'
 import CreateAccountForm from '../components/auth/CreateAccountForm'
+import { postLoginRedirectTarget } from '../auth/postLoginRedirect'
 
 type AuthProviderInfo = {
   name: string
@@ -107,7 +108,7 @@ const Login: React.FC = () => {
 
   useEffect(() => {
     console.log('[Login] isAuthenticated changed:', isAuthenticated)
-    if (isAuthenticated) navigate('/')
+    if (isAuthenticated) navigate(postLoginRedirectTarget(), { replace: true })
   }, [isAuthenticated, navigate])
 
   // OTP countdown timer

@@ -29,7 +29,6 @@ from routers.setup_router import setup_router
 from routers.passkey_router import passkey_router
 from routers.otp_router import otp_router
 from routers.artifacts_router import router as artifacts_router
-from routers.agents_router import router as agents_router
 from routers.grants_router import router as grants_router
 from routers.gate_router import gate_router
 from routers.events_router import router as events_router
@@ -245,6 +244,14 @@ def _run_phase4_core_sync(loop) -> None:
         ensure_llm_connections_collection(arango_db)
     except Exception:
         logger.exception("LLM connections collection setup failed at startup (non-fatal)")
+
+    try:
+        # Package registry — empty collection for published vnd.agience.package+json
+        # artifacts. Users publish by committing a package manifest here.
+        from services.package_registry_content_service import ensure_package_registry
+        ensure_package_registry(arango_db)
+    except Exception:
+        logger.exception("Package registry setup failed at startup (non-fatal)")
 
     try:
         from services.inbox_seeds_content_service import ensure_all_seed_sub_collections
@@ -723,7 +730,6 @@ app.include_router(platform_router)
 app.include_router(passkey_router)
 app.include_router(otp_router)
 app.include_router(artifacts_router)
-app.include_router(agents_router)
 app.include_router(grants_router)
 app.include_router(gate_router)
 

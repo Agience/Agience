@@ -54,7 +54,7 @@ def _patch_check_access():
         can_delete=True,
         can_invoke=True,
         can_add=True,
-        can_search=True,
+        can_share=True,
         resource_id=None,
         resource_type=None,
     )

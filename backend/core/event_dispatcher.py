@@ -60,7 +60,6 @@ _OPERATOR_TO_SERVER: Dict[str, tuple[str, str]] = {
     "ingest_runner":               ("astra", "ingest_text"),
     "extract_units":               ("aria",  "extract_units"),
     "provenance":                  ("aria",  "attach_provenance"),
-    "transform_executor":          ("verso", "execute_transform"),
     # Colon-namespaced names used by inter-server calls
     "verso:invoke_llm":            ("verso", "invoke_llm"),
     "ophan:check_llm_allowance":   ("ophan", "check_llm_allowance"),

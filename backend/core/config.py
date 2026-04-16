@@ -71,6 +71,11 @@ AGIENCE_PLATFORM_USER_ID = str(_uuid.uuid5(_uuid.NAMESPACE_URL, "agience://platf
 
 # AI
 OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY")
+ANTHROPIC_API_KEY: Optional[str] = os.getenv("ANTHROPIC_API_KEY")
+GOOGLE_API_KEY: Optional[str] = os.getenv("GOOGLE_API_KEY")
+OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+AI_DEFAULT_PROVIDER: str = os.getenv("AI_DEFAULT_PROVIDER", "openai")
+AI_DEFAULT_MODEL: str = os.getenv("AI_DEFAULT_MODEL", "gpt-4o-mini")
 
 # ArangoDB
 ARANGO_HOST: str = os.getenv("ARANGO_HOST", "127.0.0.1")
@@ -223,6 +228,11 @@ def load_bootstrap_settings() -> None:
 _SETTING_MAP: dict[str, tuple[str, type]] = {
     # AI
     "ai.openai_api_key": ("OPENAI_API_KEY", str),
+    "ai.anthropic_api_key": ("ANTHROPIC_API_KEY", str),
+    "ai.google_api_key": ("GOOGLE_API_KEY", str),
+    "ai.ollama_base_url": ("OLLAMA_BASE_URL", str),
+    "ai.default_provider": ("AI_DEFAULT_PROVIDER", str),
+    "ai.default_model": ("AI_DEFAULT_MODEL", str),
 
     # ArangoDB
     "db.arango.host": ("ARANGO_HOST", str),
@@ -333,7 +343,8 @@ def load_settings_from_db() -> None:
     Rebind all module-level variables from PlatformSettingsService cache.
     Must be called after PlatformSettingsService.load_all().
     """
-    global OPENAI_API_KEY
+    global OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_API_KEY
+    global OLLAMA_BASE_URL, AI_DEFAULT_PROVIDER, AI_DEFAULT_MODEL
     global ARANGO_HOST, ARANGO_PORT, ARANGO_USERNAME, ARANGO_DATABASE
     global GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, GOOGLE_OAUTH_REDIRECT_URI
     global MICROSOFT_ENTRA_TENANT, MICROSOFT_ENTRA_CLIENT_ID, MICROSOFT_ENTRA_CLIENT_SECRET, MICROSOFT_ENTRA_REDIRECT_URI
@@ -358,6 +369,11 @@ def load_settings_from_db() -> None:
     from services.platform_settings_service import settings
 
     for setting_key, (var_name, converter) in _SETTING_MAP.items():
+        # Environment variables override DB values (operator .env wins).
+        env_val = os.getenv(var_name)
+        if env_val is not None:
+            continue
+
         value = settings.get(setting_key)
         if value is None:
             continue

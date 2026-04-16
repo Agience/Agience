@@ -21,6 +21,20 @@ sys.path.insert(0, str(_HERE.parent))
 from server import _evaluate_condition, run_workflow
 
 
+def _transform_id_from_url(url: str) -> str | None:
+    """Extract the artifact id segment from ``/artifacts/{id}/invoke`` URLs.
+
+    Since child-transform dispatch moved from POST /agents/invoke (id in body)
+    to POST /artifacts/{id}/invoke (id in URL), tests now inspect the URL
+    instead of the request body.
+    """
+    if "/artifacts/" not in url:
+        return None
+    after = url.split("/artifacts/", 1)[1]
+    segment = after.split("/", 1)[0]
+    return segment or None
+
+
 # ---------------------------------------------------------------------------
 # _evaluate_condition
 # ---------------------------------------------------------------------------
@@ -182,8 +196,7 @@ class TestRunWorkflow:
             if method == "PATCH":
                 return MockResponse({})
             if method == "POST" and "invoke" in url:
-                body = kwargs.get("json", {})
-                call_log.append(body.get("transform_id"))
+                call_log.append(_transform_id_from_url(url))
                 return MockResponse({"output": "ok"})
             return MockResponse({})
 
@@ -217,8 +230,7 @@ class TestRunWorkflow:
             if method == "PATCH":
                 return MockResponse({})
             if method == "POST" and "invoke" in url:
-                body = kwargs.get("json", {})
-                call_log.append(body.get("transform_id"))
+                call_log.append(_transform_id_from_url(url))
                 return MockResponse({"output": "ok"})
             return MockResponse({})
 
@@ -251,8 +263,7 @@ class TestRunWorkflow:
             if method == "PATCH":
                 return MockResponse({})
             if method == "POST" and "invoke" in url:
-                body = kwargs.get("json", {})
-                call_log.append(body.get("transform_id"))
+                call_log.append(_transform_id_from_url(url))
                 return MockResponse({"output": "ok"})
             return MockResponse({})
 
@@ -297,8 +308,7 @@ class TestRunWorkflow:
             if method == "PATCH":
                 return MockResponse({})
             if method == "POST" and "invoke" in url:
-                body = kwargs.get("json", {})
-                call_log.append(body.get("transform_id"))
+                call_log.append(_transform_id_from_url(url))
                 return MockResponse({"output": "ok"})
             return MockResponse({})
 
@@ -330,8 +340,7 @@ class TestRunWorkflow:
             if method == "PATCH":
                 return MockResponse({})
             if method == "POST" and "invoke" in url:
-                body = kwargs.get("json", {})
-                call_log.append(body.get("transform_id"))
+                call_log.append(_transform_id_from_url(url))
                 return MockResponse({"output": "ok"})
             return MockResponse({})
 
@@ -363,8 +372,7 @@ class TestRunWorkflow:
             if method == "PATCH":
                 return MockResponse({})
             if method == "POST" and "invoke" in url:
-                body = kwargs.get("json", {})
-                if body.get("transform_id") == "t-b":
+                if _transform_id_from_url(url) == "t-b":
                     return MockResponse({"detail": "tool failed"}, status_code=500)
                 return MockResponse({"output": "ok"})
             return MockResponse({})

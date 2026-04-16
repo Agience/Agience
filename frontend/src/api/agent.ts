@@ -1,27 +1,20 @@
 /**
- * api/agent.ts — Canonical operator invocation API.
+ * api/agent.ts — server-tool invocation helpers.
  *
- * All operator invocations — Transform execution, named operators, and LLM calls —
- * funnel through POST /agents/invoke with a unified request shape:
- *
- *   transform_id  → what Transform artifact to execute
- *   operator      → named operator
- *   workspace_id  → active workspace (scoping + artifact resolution)
- *   artifacts     → artifact IDs to inject as knowledge context
- *   input         → raw text input
- *   params        → structured args for operators / Transform artifacts
+ * All tool invocations go through the canonical
+ * ``POST /artifacts/{server_id}/invoke`` path. The MCP server artifact's
+ * ``invoke`` operation (declared in ``vnd.agience.mcp-server+json/type.json``)
+ * resolves ``body.name`` as the tool to call on that server.
  *
  * Identity is always derived server-side from the auth token.
  */
 
 import { post } from './api';
-import type { InvokeRequest } from './types';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Demo data
 // ──────────────────────────────────────────────────────────────────────────────
 
-// Demo Data Generation Types
 interface LoadDemoDataRequest {
   topics?: string[];
   num_workspaces?: number;
@@ -38,20 +31,25 @@ interface LoadDemoDataResponse {
 }
 
 /**
- * Generate AI-powered demo data (workspace artifacts and optional Agience Guide)
+ * Generate AI-powered demo data.
+ *
+ * Dispatches to Verso's ``load_demo_data`` tool (demo-data authoring
+ * lives in the reasoning server since it needs the LLM to synthesize
+ * content).
  */
 export async function loadDemoData(request: LoadDemoDataRequest): Promise<LoadDemoDataResponse> {
-  const payload = {
-    operator: 'demo_data',
-    operator_params: {
-      topics: request.topics,
-      num_workspaces: request.num_workspaces,
-      artifacts_per_workspace: request.artifacts_per_workspace,
-      include_agience_guide: request.include_agience_guide,
+  return post<LoadDemoDataResponse, unknown>(
+    `/artifacts/verso/invoke`,
+    {
+      name: 'load_demo_data',
+      arguments: {
+        topics: request.topics,
+        num_workspaces: request.num_workspaces,
+        artifacts_per_workspace: request.artifacts_per_workspace,
+        include_agience_guide: request.include_agience_guide,
+      },
     },
-  } as const;
-
-  return post<LoadDemoDataResponse, typeof payload>('/agents/invoke', payload);
+  );
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -69,23 +67,27 @@ export interface ExtractUnitsResponse {
 /**
  * Extract structured information units from an artifact.
  *
- * Runs the `extract_units` operator and creates new workspace artifacts for
- * each extracted unit.  Callers should refresh workspace artifacts after this.
+ * Dispatches to Aria's ``extract_units`` tool. Creates new workspace
+ * artifacts for each extracted unit; callers should refresh workspace
+ * artifacts after this returns.
  */
 export async function extractUnits(
   workspace_id: string,
   source_artifact_id: string,
   artifact_artifact_ids?: string[]
 ): Promise<ExtractUnitsResponse> {
-  const payload: InvokeRequest = {
-    operator: 'extract_units:extract_units',
-    workspace_id,
-    params: {
-      source_artifact_id,
-      artifact_artifact_ids: artifact_artifact_ids ?? [],
+  return post<ExtractUnitsResponse, unknown>(
+    `/artifacts/aria/invoke`,
+    {
+      name: 'extract_units',
+      workspace_id,
+      arguments: {
+        workspace_id,
+        source_artifact_id,
+        artifact_artifact_ids: artifact_artifact_ids ?? [],
+      },
     },
-  };
-  return post<ExtractUnitsResponse, InvokeRequest>('/agents/invoke', payload);
+  );
 }
 
 /** Alias for {@link extractUnits} — preferred name for content-type handlers. */

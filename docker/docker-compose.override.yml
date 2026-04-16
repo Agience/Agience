@@ -14,17 +14,17 @@ services:
 
   content:
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
 
   graph:
     ports:
-      - "8529:8529"
+      - "${ARANGO_PORT:-8529}:8529"
 
   search:
     ports:
-      - "9200:9200"
-      - "9600:9600"
+      - "${OPENSEARCH_PORT:-9200}:9200"
+      - "${OPENSEARCH_PERF_PORT:-9600}:9600"
 
   backend:
     image: ${BACKEND_IMAGE:-agience-core-backend}
@@ -32,7 +32,7 @@ services:
       context: .
       dockerfile: docker/backend.Dockerfile
     ports:
-      - "8081:8081"
+      - "${BACKEND_PORT:-8081}:8081"
     volumes:
       - ${DATA_PATH:-./.data}/keys:/app/.data/keys:ro
 

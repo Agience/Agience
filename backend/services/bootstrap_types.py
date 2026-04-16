@@ -31,6 +31,7 @@ AGENCY_CONTENT_TYPE = "application/vnd.agience.agency+json"
 AGENT_CONTENT_TYPE = "application/vnd.agience.agent+json"
 LLM_CONNECTION_CONTENT_TYPE = "application/vnd.agience.llm-connection+json"
 MCP_SERVER_CONTENT_TYPE = "application/vnd.agience.mcp-server+json"
+PACKAGE_CONTENT_TYPE = "application/vnd.agience.package+json"
 
 # ---------------------------------------------------------------------------
 # Collection slugs — stable human-readable IDs for idempotent bootstrap lookup
@@ -49,6 +50,11 @@ ALL_TOOLS_COLLECTION_SLUG = "agience-seeds-all-tools"
 AGENTS_COLLECTION_SLUG = "agience-seeds-agents"
 
 LLM_CONNECTIONS_COLLECTION_SLUG = "agience-llm-connections"
+
+# Package registry — committed package manifests that have been published
+# for discovery. Shown in the marketplace browse UI and queryable via the
+# standard artifact search. Empty at first boot; populated as users publish.
+PACKAGE_REGISTRY_COLLECTION_SLUG = "agience-package-registry"
 
 # Platform operator — singleton collection whose write grant designates the operator
 OPERATOR_COLLECTION_SLUG = "agience-platform-operator"
@@ -96,6 +102,7 @@ USER_READABLE_SEED_SLUGS = [
     ALL_TOOLS_COLLECTION_SLUG,
     AGENTS_COLLECTION_SLUG,
     LLM_CONNECTIONS_COLLECTION_SLUG,
+    PACKAGE_REGISTRY_COLLECTION_SLUG,
 ]
 
 # Collections whose committed artifacts are materialized into the user's inbox workspace.
@@ -116,5 +123,6 @@ ALL_PLATFORM_COLLECTION_SLUGS = [
     ALL_TOOLS_COLLECTION_SLUG,
     AGENTS_COLLECTION_SLUG,
     LLM_CONNECTIONS_COLLECTION_SLUG,
+    PACKAGE_REGISTRY_COLLECTION_SLUG,
     OPERATOR_COLLECTION_SLUG,
 ]

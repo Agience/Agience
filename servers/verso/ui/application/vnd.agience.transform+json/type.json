@@ -4,7 +4,7 @@
   "inherits": [
     "application/json"
   ],
-  "description": "Agience Transform \u2014 a named, executable transformation step invokable via POST /agents/invoke.",
+  "description": "Agience Transform \u2014 a named, executable transformation step invokable via POST /artifacts/{id}/invoke. For run.type=mcp-tool, dispatch resolves directly to context.run.server + context.run.tool (per-artifact routing, third-party-friendly). For run.type in {workflow, llm, transform-ref}, dispatch falls through to verso:execute_transform which reads the run block and orchestrates.",
   "context_schema": {
     "transform": {
       "type": "object",
@@ -218,7 +218,9 @@
       "dispatch": {
         "kind": "mcp_tool",
         "server_ref": "$.context.run.server",
-        "tool_ref": "$.context.run.tool"
+        "tool_ref": "$.context.run.tool",
+        "orchestrator_server": "verso",
+        "orchestrator_tool": "execute_transform"
       },
       "input_schema": {
         "type": "object",

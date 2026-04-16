@@ -43,7 +43,7 @@ class TestTaskAgentDispatch:
         assert captured["foo"] == "bar"
 
     def test_task_agent_skips_llm_path(self):
-        with patch("services.agent_service.create_chat_completion") as create:
+        with patch("services.agent_service.llm_service.complete") as create:
             agent_service.invoke(
                 db=MagicMock(), user_id="u", agent=lambda **kw: None
             )
@@ -58,15 +58,16 @@ class TestLLMPath:
     def test_builds_messages_with_system_and_context(self):
         captured = {}
 
-        def fake_create(**kwargs):
+        def fake_complete(db, user_id, messages, **kwargs):
+            captured["messages"] = messages
             captured.update(kwargs)
             return ("the answer", MagicMock())
 
         with (
             patch("core.config.BILLING_ENFORCEMENT_ENABLED", False),
             patch(
-                "services.agent_service.create_chat_completion",
-                side_effect=fake_create,
+                "services.agent_service.llm_service.complete",
+                side_effect=fake_complete,
             ),
         ):
             out = agent_service.invoke(
@@ -91,15 +92,15 @@ class TestLLMPath:
     def test_messages_without_instructions_or_context(self):
         captured = {}
 
-        def fake_create(**kwargs):
-            captured.update(kwargs)
+        def fake_complete(db, user_id, messages, **kwargs):
+            captured["messages"] = messages
             return ("ok", MagicMock())
 
         with (
             patch("core.config.BILLING_ENFORCEMENT_ENABLED", False),
             patch(
-                "services.agent_service.create_chat_completion",
-                side_effect=fake_create,
+                "services.agent_service.llm_service.complete",
+                side_effect=fake_complete,
             ),
         ):
             agent_service.invoke(db=MagicMock(), user_id="u", input="hello")
@@ -113,7 +114,7 @@ class TestLLMPath:
         with (
             patch("core.config.BILLING_ENFORCEMENT_ENABLED", False),
             patch(
-                "services.agent_service.create_chat_completion",
+                "services.agent_service.llm_service.complete",
                 side_effect=RuntimeError("upstream"),
             ),
         ):
@@ -130,7 +131,7 @@ class TestBillingGate:
                 return_value={"vu_limit": 5},
             ),
             patch("services.gate_service.get_tally", return_value=4),
-            patch("services.agent_service.create_chat_completion") as create,
+            patch("services.agent_service.llm_service.complete") as create,
         ):
             with pytest.raises(HTTPException) as ei:
                 agent_service.invoke(db=MagicMock(), user_id="u", input="x")
@@ -147,7 +148,7 @@ class TestBillingGate:
             patch("services.gate_service.get_tally", return_value=0),
             patch("services.gate_service.add_tally") as add,
             patch(
-                "services.agent_service.create_chat_completion",
+                "services.agent_service.llm_service.complete",
                 return_value=("answer", MagicMock()),
             ),
         ):
@@ -165,7 +166,7 @@ class TestBillingGate:
             patch("services.gate_service.get_tally", return_value=0),
             patch("services.gate_service.add_tally") as add,
             patch(
-                "services.agent_service.create_chat_completion",
+                "services.agent_service.llm_service.complete",
                 return_value=("ok", MagicMock()),
             ),
         ):

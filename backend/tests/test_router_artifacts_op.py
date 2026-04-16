@@ -53,7 +53,7 @@ def authed_client(app, mock_db):
     synthetic_grant.can_update = True
     synthetic_grant.can_invoke = True
     synthetic_grant.can_add = True
-    synthetic_grant.can_search = True
+    synthetic_grant.can_share = True
     synthetic_grant.resource_id = None
     synthetic_grant.resource_type = None
     ctx = AuthContext(user_id="u-1", principal_type="user", grants=[synthetic_grant])

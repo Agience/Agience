@@ -186,21 +186,13 @@ async def format_response(
         style: Optional style hint � 'concise', 'detailed', 'executive', 'technical'.
         workspace_id: Optional workspace context for LLM-assisted formatting.
     """
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{AGIENCE_API_URI}/agents/invoke",
-            headers=await _headers(),
-            json={
-                "agent": "aria:format_response",
-                "input": content,
-                "params": {"format": format, "style": style},
-                "workspace_id": workspace_id,
-            },
-            timeout=30,
-        )
-    if resp.status_code >= 400:
-        return f"Error: {resp.status_code} � {resp.text[:300]}"
-    return json.dumps(resp.json(), indent=2)
+    # TODO(agents-invoke-removal): the former implementation dispatched to a
+    # backend agent plugin "aria:format_response" via /agents/invoke, but no
+    # such plugin exists and inlining would recurse into this tool. Leaving
+    # for manual design review — see servers/aria/server.py for the tool
+    # signature contract.
+    _ = (content, format, style, workspace_id)  # unused — kept for stable tool signature
+    return json.dumps({"error": "format_response is not yet implemented"})
 
 
 # ---------------------------------------------------------------------------
@@ -946,12 +938,12 @@ async def _invoke_llm_via_verso(
     temperature: float = 0.7,
     max_output_tokens: int = 2048,
 ) -> dict:
-    """Call Verso's invoke_llm tool via /agents/invoke.
+    """Call Verso's invoke_llm tool via the artifact-native invoke path.
 
     Uses Aria's server identity (``_headers()``) for the call to Core.
     User context flows to Verso via the transport layer, not as a parameter.
     """
-    params: dict = {
+    arguments: dict = {
         "connection_artifact_id": connection_artifact_id,
         "workspace_id": workspace_id,
         "messages": json.dumps(messages),
@@ -961,11 +953,12 @@ async def _invoke_llm_via_verso(
 
     async with httpx.AsyncClient() as client:
         resp = await client.post(
-            f"{AGIENCE_API_URI}/agents/invoke",
+            f"{AGIENCE_API_URI}/artifacts/verso/invoke",
             headers=await _headers(),
             json={
-                "agent": "verso:invoke_llm",
-                "params": params,
+                "name": "invoke_llm",
+                "arguments": arguments,
+                "workspace_id": workspace_id,
             },
             timeout=120,
         )

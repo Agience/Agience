@@ -756,7 +756,7 @@ class TestBindingResolution:
 
     def test_resolve_workspace_level(self):
         db = MagicMock()
-        ws = _ws_with_bindings({"memory": {"collection_id": "col-1"}})
+        ws = _ws_with_bindings({"memory": {"artifact_id": "col-1"}})
         col = _col()
         with (
             patch("services.workspace_service.arango.get_collection_by_id", side_effect=lambda _db, cid: ws if cid == "ws-1" else col),
@@ -767,7 +767,7 @@ class TestBindingResolution:
 
     def test_resolve_missing_role_returns_none(self):
         db = MagicMock()
-        ws = _ws_with_bindings({"memory": {"collection_id": "col-1"}})
+        ws = _ws_with_bindings({"memory": {"artifact_id": "col-1"}})
         with patch("services.workspace_service.arango.get_collection_by_id", return_value=ws):
             result = ws_svc.resolve_binding(db, "user-1", "ws-1", "tools")
         assert result is None
@@ -781,7 +781,7 @@ class TestBindingResolution:
 
     def test_resolve_access_denied_returns_none(self):
         db = MagicMock()
-        ws = _ws_with_bindings({"memory": {"collection_id": "col-1"}})
+        ws = _ws_with_bindings({"memory": {"artifact_id": "col-1"}})
         col = _col(owner="other-user")
         with (
             patch("services.workspace_service.arango.get_collection_by_id", side_effect=lambda _db, cid: ws if cid == "ws-1" else col),
@@ -792,16 +792,16 @@ class TestBindingResolution:
 
     def test_resolve_collection_not_found_returns_none(self):
         db = MagicMock()
-        ws = _ws_with_bindings({"memory": {"collection_id": "col-gone"}})
+        ws = _ws_with_bindings({"memory": {"artifact_id": "col-gone"}})
         with patch("services.workspace_service.arango.get_collection_by_id", side_effect=lambda _db, cid: ws if cid == "ws-1" else None):
             result = ws_svc.resolve_binding(db, "user-1", "ws-1", "memory")
         assert result is None
 
     def test_transform_overrides_workspace(self):
         db = MagicMock()
-        ws = _ws_with_bindings({"tools": {"collection_id": "col-ws"}})
+        ws = _ws_with_bindings({"tools": {"artifact_id": "col-ws"}})
         col_t = _col(cid="col-transform")
-        transform_ctx = {"bindings": {"tools": {"collection_id": "col-transform"}}}
+        transform_ctx = {"bindings": {"tools": {"artifact_id": "col-transform"}}}
         with (
             patch("services.workspace_service.arango.get_collection_by_id", side_effect=lambda _db, cid: ws if cid == "ws-1" else col_t),
             patch("services.workspace_service.arango.get_active_grants_for_principal_resource", return_value=[]),
@@ -811,10 +811,10 @@ class TestBindingResolution:
 
     def test_step_overrides_transform(self):
         db = MagicMock()
-        ws = _ws_with_bindings({"tools": {"collection_id": "col-ws"}})
+        ws = _ws_with_bindings({"tools": {"artifact_id": "col-ws"}})
         col_s = _col(cid="col-step")
-        transform_ctx = {"bindings": {"tools": {"collection_id": "col-transform"}}}
-        step_ctx = {"bindings": {"tools": {"collection_id": "col-step"}}}
+        transform_ctx = {"bindings": {"tools": {"artifact_id": "col-transform"}}}
+        step_ctx = {"bindings": {"tools": {"artifact_id": "col-step"}}}
         with (
             patch("services.workspace_service.arango.get_collection_by_id", side_effect=lambda _db, cid: ws if cid == "ws-1" else col_s),
             patch("services.workspace_service.arango.get_active_grants_for_principal_resource", return_value=[]),
@@ -824,7 +824,7 @@ class TestBindingResolution:
 
     def test_cascade_falls_through(self):
         db = MagicMock()
-        ws = _ws_with_bindings({"memory": {"collection_id": "col-1"}})
+        ws = _ws_with_bindings({"memory": {"artifact_id": "col-1"}})
         col = _col()
         step_ctx = {"bindings": {}}
         transform_ctx = {"bindings": {}}
@@ -838,9 +838,9 @@ class TestBindingResolution:
     def test_resolve_all_returns_all_roles(self):
         db = MagicMock()
         ws = _ws_with_bindings({
-            "memory": {"collection_id": "col-m"},
-            "tools": {"collection_id": "col-t"},
-            "data": {"collection_id": "col-d"},
+            "memory": {"artifact_id": "col-m"},
+            "tools": {"artifact_id": "col-t"},
+            "data": {"artifact_id": "col-d"},
         })
         def _get_col(_db, cid):
             if cid == "ws-1":
@@ -856,8 +856,8 @@ class TestBindingResolution:
     def test_resolve_all_omits_inaccessible(self):
         db = MagicMock()
         ws = _ws_with_bindings({
-            "memory": {"collection_id": "col-m"},
-            "tools": {"collection_id": "col-t"},
+            "memory": {"artifact_id": "col-m"},
+            "tools": {"artifact_id": "col-t"},
         })
         col_m = _col(cid="col-m")
         col_t = _col(owner="other-user", cid="col-t")
@@ -878,8 +878,8 @@ class TestBindingResolution:
 
     def test_resolve_all_merges_cascade(self):
         db = MagicMock()
-        ws = _ws_with_bindings({"memory": {"collection_id": "col-m"}})
-        transform_ctx = {"bindings": {"tools": {"collection_id": "col-t"}}}
+        ws = _ws_with_bindings({"memory": {"artifact_id": "col-m"}})
+        transform_ctx = {"bindings": {"tools": {"artifact_id": "col-t"}}}
         def _get_col(_db, cid):
             if cid == "ws-1":
                 return ws
@@ -893,7 +893,7 @@ class TestBindingResolution:
 
     def test_resolve_grant_read_allows_access(self):
         db = MagicMock()
-        ws = _ws_with_bindings({"memory": {"collection_id": "col-1"}})
+        ws = _ws_with_bindings({"memory": {"artifact_id": "col-1"}})
         col = _col(owner="other-user")
         grant = _grant(grantee="user-1", resource_id="col-1", can_read=True)
         with (

@@ -2,7 +2,10 @@
 """
 Grant entity -- unified authorization record.
 
-CRUDIASO permission model: Create, Read, Update, Delete, Invoke, Add, Search, Own.
+CRUDIASO permission model: Create, Read, Update, Delete, Invoke, Add, Share, Admin.
+
+S (Share) = ability to create invites / share the resource.
+O (Admin) = meta-permission to manage grants on the resource.
 
 See: .dev/features/unified-artifact-api.md
 """
@@ -35,6 +38,55 @@ class Grant(BaseEntity):
     EFFECT_ALLOW = "allow"
     EFFECT_DENY = "deny"
 
+    # Role presets --- named permission bundles for the share/invite flow.
+    #
+    # Use via ``Grant.permissions_for_role(role_name)`` rather than reading
+    # this dict directly so new roles can be added without callers needing
+    # to know about every flag.
+    ROLE_PRESETS: Dict[str, Dict[str, bool]] = {
+        "viewer": {
+            "can_read": True,
+        },
+        "editor": {
+            "can_create": True,
+            "can_read": True,
+            "can_update": True,
+            "can_delete": True,
+        },
+        "collaborator": {
+            "can_create": True,
+            "can_read": True,
+            "can_update": True,
+            "can_delete": True,
+            "can_invoke": True,
+            "can_add": True,
+            "can_share": True,
+        },
+        "admin": {
+            "can_create": True,
+            "can_read": True,
+            "can_update": True,
+            "can_delete": True,
+            "can_invoke": True,
+            "can_add": True,
+            "can_share": True,
+            "can_admin": True,
+        },
+    }
+
+    @classmethod
+    def permissions_for_role(cls, role: str) -> Dict[str, bool]:
+        """Return the CRUDIASO bit pattern for a named role.
+
+        Raises :class:`ValueError` if *role* is not a known preset.
+        """
+        preset = cls.ROLE_PRESETS.get(role)
+        if preset is None:
+            raise ValueError(
+                f"Unknown role {role!r}; valid roles: {sorted(cls.ROLE_PRESETS)}"
+            )
+        return dict(preset)
+
     def __init__(
         self,
         resource_type: str,           # "artifact" or "collection"
@@ -50,8 +102,8 @@ class Grant(BaseEntity):
         can_delete: bool = False,
         can_invoke: bool = False,
         can_add: bool = False,
-        can_search: bool = False,
-        can_own: bool = False,
+        can_share: bool = False,
+        can_admin: bool = False,
         # Identity requirements
         requires_identity: bool = False,
         read_requires_identity: Optional[bool] = None,
@@ -90,8 +142,8 @@ class Grant(BaseEntity):
         self.can_delete = can_delete
         self.can_invoke = can_invoke
         self.can_add = can_add
-        self.can_search = can_search
-        self.can_own = can_own
+        self.can_share = can_share
+        self.can_admin = can_admin
         # Identity requirements
         self.requires_identity = requires_identity
         self.read_requires_identity = read_requires_identity
@@ -132,8 +184,8 @@ class Grant(BaseEntity):
             "can_delete": self.can_delete,
             "can_invoke": self.can_invoke,
             "can_add": self.can_add,
-            "can_search": self.can_search,
-            "can_own": self.can_own,
+            "can_share": self.can_share,
+            "can_admin": self.can_admin,
             # Identity
             "requires_identity": self.requires_identity,
             "read_requires_identity": self.read_requires_identity,
@@ -176,8 +228,11 @@ class Grant(BaseEntity):
             can_delete=data.get("can_delete", False),
             can_invoke=data.get("can_invoke", False),
             can_add=data.get("can_add", False),
-            can_search=data.get("can_search", data.get("can_read", False)),
-            can_own=data.get("can_own", False),
+            # Legacy fallbacks for DB docs written before the CRUDIASO rename:
+            # ``can_search`` → ``can_share`` (S repurposed from Search to Share)
+            # ``can_own``    → ``can_admin`` (O renamed for clarity)
+            can_share=data.get("can_share", data.get("can_search", data.get("can_read", False))),
+            can_admin=data.get("can_admin", data.get("can_own", False)),
             # Identity
             requires_identity=data.get("requires_identity", False),
             read_requires_identity=data.get("read_requires_identity"),

@@ -15,8 +15,8 @@ export interface GrantCreate {
   can_delete?: boolean;
   can_invoke?: boolean;
   can_add?: boolean;
-  can_search?: boolean;
-  can_own?: boolean;
+  can_share?: boolean;
+  can_admin?: boolean;
   // Invite targeting (optional)
   target_entity?: string;
   target_entity_type?: string;
@@ -41,8 +41,8 @@ export interface GrantUpdate {
   can_delete?: boolean;
   can_invoke?: boolean;
   can_add?: boolean;
-  can_search?: boolean;
-  can_own?: boolean;
+  can_share?: boolean;
+  can_admin?: boolean;
 }
 
 // What grant endpoints return
@@ -59,8 +59,8 @@ export interface GrantResponse {
   can_delete: boolean;
   can_invoke: boolean;
   can_add: boolean;
-  can_search: boolean;
-  can_own: boolean;
+  can_share: boolean;
+  can_admin: boolean;
   requires_identity: boolean;
   read_requires_identity?: boolean | null;
   write_requires_identity?: boolean | null;

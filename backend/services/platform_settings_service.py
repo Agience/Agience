@@ -39,6 +39,11 @@ DEFAULTS: dict[str, str] = {
     "db.postgres.user": "agience",
     "db.postgres.name": "agience",
 
+    # AI defaults
+    "ai.default_provider": "openai",
+    "ai.default_model": "gpt-4o-mini",
+    "ai.ollama_base_url": "http://localhost:11434",
+
     # ArangoDB — use env vars so dev mode resolves to 127.0.0.1; Docker sets ARANGO_HOST=graph
     "db.arango.host": os.getenv("ARANGO_HOST", "127.0.0.1"),
     "db.arango.port": os.getenv("ARANGO_PORT", "8529"),

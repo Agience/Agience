@@ -418,7 +418,7 @@ def create_and_add_artifact(
 
     event_bus.emit_artifact_event_sync(collection_id, "artifact.created", {
         "artifact": {**created.to_dict(), "collection_id": collection_id}
-    })
+    }, actor_id=actor_id or user_id)
     return created
 
 
@@ -495,7 +495,7 @@ def create_and_add_artifacts_batch(
     for artifact in created:
         event_bus.emit_artifact_event_sync(collection_id, "artifact.created", {
             "artifact": {**artifact.to_dict(), "collection_id": collection_id}
-        })
+        }, actor_id=user_id)
     return created
 
 
@@ -576,7 +576,7 @@ def edit_artifact_in_collection(
     _attach_committed_collection_ids(db, [created])
     event_bus.emit_artifact_event_sync(collection_id, "artifact.updated", {
         "artifact": {**created.to_dict(), "collection_id": collection_id}
-    })
+    }, actor_id=user_id)
     return created
 
 
@@ -642,7 +642,7 @@ def remove_artifact_from_collection_by_version(
 
     event_bus.emit_artifact_event_sync(collection_id, "artifact.deleted", {
         "artifact_id": root_id, "collection_id": collection_id
-    })
+    }, actor_id=user_id)
 
 
 def get_unattached_artifacts(db: StandardDatabase, user_id: str) -> List[ArtifactEntity]:
@@ -872,7 +872,7 @@ def add_artifact_to_collection_with_access_check(
     _attach_committed_collection_ids(db, [artifact])
     event_bus.emit_artifact_event_sync(collection_id, "artifact.created", {
         "artifact": {**artifact.to_dict(), "collection_id": collection_id}
-    })
+    }, actor_id=user_id)
     return artifact
 
 

@@ -41,6 +41,7 @@ from pydantic.functional_serializers import SerializerFunctionWrapHandler
 
 from core.dependencies import get_arango_db
 from entities.collection import WORKSPACE_CONTENT_TYPE, COLLECTION_CONTENT_TYPE
+import db.arango as arango
 from services.dependencies import (
     get_auth,
     AuthContext,
@@ -389,13 +390,34 @@ async def create_artifact(
 
     if ct == COLLECTION_CONTENT_TYPE:
         container_body = CreateContainerRequest(**body)
+
+        # Resolve name: explicit name field → title from context JSON → default
+        name = container_body.name
+        if not name:
+            ctx_str = body.get("context")
+            if ctx_str:
+                try:
+                    ctx = json.loads(ctx_str) if isinstance(ctx_str, str) else ctx_str
+                    name = ctx.get("title")
+                except (json.JSONDecodeError, TypeError, AttributeError):
+                    pass
+        name = name or "Untitled Collection"
+
         from services.collection_service import create_new_collection
         entity = create_new_collection(
             db=arango_db,
             owner_id=auth.user_id,
-            name=container_body.name or "Untitled Collection",
+            name=name,
             description=container_body.description or "",
         )
+
+        # If created inside a container, link the collection artifact to it.
+        container_id = body.get("container_id")
+        if container_id and _is_collection(arango_db, container_id):
+            from db.arango import add_artifact_to_collection
+            order_key = body.get("order_key")
+            add_artifact_to_collection(arango_db, container_id, entity.id, order_key=order_key)
+
         result = entity.to_dict()
         result["_container_type"] = "collection"
         return result
@@ -613,6 +635,22 @@ async def invoke_artifact(
         merged_params["artifacts"] = body.artifacts
     merged_params["transform_id"] = artifact_id
 
+    # Inject resources binding: when a workspace has a `resources` binding and
+    # the caller hasn't explicitly provided params.resources, resolve it.
+    if body.workspace_id and "resources" not in merged_params:
+        try:
+            from services.workspace_service import resolve_binding
+            resources_cid = resolve_binding(
+                arango_db, auth.user_id, body.workspace_id, "resources",
+            )
+            if resources_cid:
+                resource_rows = arango.list_collection_artifacts(arango_db, resources_cid)
+                merged_params["resources"] = [
+                    r.get("id") for r in resource_rows if r.get("id")
+                ]
+        except Exception:
+            pass  # Non-fatal: transform runs without injected resources
+
     from services import operation_dispatcher
     from services.operation_dispatcher import (
         DispatchContext,
@@ -782,6 +820,15 @@ async def add_item_to_container(
     )
     result = create_collection_artifact(arango_db, entity)
     add_artifact_to_collection(arango_db, container_id, entity.root_id)
+
+    # Emit event so real-time subscribers see the new artifact.
+    from core.event_bus import emit_artifact_event_sync
+    emit_artifact_event_sync(
+        container_id, "artifact.created",
+        {"artifact": result.to_dict()},
+        actor_id=auth.user_id,
+    )
+
     return result.to_dict()
 
 

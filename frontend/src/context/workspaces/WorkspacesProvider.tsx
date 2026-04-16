@@ -1,4 +1,5 @@
-import { ReactNode, useState, useEffect, useCallback, useMemo } from 'react';
+import { ReactNode, useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useParams, useSearchParams } from 'react-router-dom';
 import {
   listWorkspaces,
   createWorkspace as apiCreateWorkspace,
@@ -21,6 +22,12 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
     const raw = preferences.browser?.hiddenWorkspaceTabIds;
     return Array.isArray(raw) ? raw.map(String).filter(Boolean) : [];
   }, [preferences.browser?.hiddenWorkspaceTabIds]);
+
+  // Deep link: read artifactId from URL path and workspace from query param.
+  const { artifactId: urlArtifactId } = useParams<{ artifactId?: string }>();
+  const [searchParams] = useSearchParams();
+  const urlWorkspaceId = searchParams.get('workspace');
+  const deepLinkApplied = useRef(false);
 
   // Load workspaces once authenticated
   useEffect(() => {
@@ -57,6 +64,20 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
       return visibleWorkspaces[0].id;
     });
   }, [hiddenWorkspaceTabIds, isAuthenticated, loading, preferencesLoading, workspaces]);
+
+  // Deep link: if URL has /:artifactId (or ?workspace=xyz) matching a
+  // known workspace, activate it on first load.
+  useEffect(() => {
+    if (deepLinkApplied.current || workspaces.length === 0) return;
+    const targetWsId = urlWorkspaceId || urlArtifactId;
+    if (targetWsId) {
+      const found = workspaces.find((w) => w.id === targetWsId);
+      if (found) {
+        setActiveWorkspaceId(found.id);
+        deepLinkApplied.current = true;
+      }
+    }
+  }, [workspaces, urlArtifactId, urlWorkspaceId]);
 
   // Create
   const createWorkspace = useCallback(async (

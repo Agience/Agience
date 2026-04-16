@@ -22,12 +22,12 @@ services:
 
   servers:
     image: ${SERVERS_IMAGE:-agience-core-servers}
+    container_name: ${COMPOSE_PROJECT_NAME:-agience}-servers
     build:
       context: .
       dockerfile: servers/_host/Dockerfile
       args:
         GH_TOKEN: ${GH_TOKEN:-}
-    container_name: servers
     restart: unless-stopped
     env_file:
       - path: .env
@@ -41,17 +41,17 @@ services:
       - STREAM_INGEST_URL=${STREAM_INGEST_URL:-rtmp://stream:1936/live}
     volumes:
       - ${NEXUS_WORKSPACE:-./.data/nexus}:/workspace
-      - ${DATA_PATH:-./.data}/stream:/var/stream  # shared with astra-stream for HLS→MP4 finalization
+      - ${DATA_PATH:-./.data}/stream:/var/stream  # shared with stream for HLS→MP4 finalization
       - ${DATA_PATH:-./.data}/keys:/run/secrets/keys:ro  # platform internal secret for kernel server auth
     ports:
-      - "8082:8082"
+      - "${SERVERS_PORT:-8082}:8082"
 
-  astra-stream:
+  stream:
     image: ${STREAM_IMAGE:-agience-core-stream}
+    container_name: ${COMPOSE_PROJECT_NAME:-agience}-stream
     build:
       context: servers/astra
       dockerfile: stream/Dockerfile
-    container_name: stream
     restart: unless-stopped
     env_file:
       - path: .env

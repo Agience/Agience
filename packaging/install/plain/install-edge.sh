@@ -211,7 +211,14 @@ ok "Compose file downloaded"
 
 # ── Step 5b: Set edge channel ───────────────────────────────────────
 
-printf "VERSION=edge\n" > "${INSTALL_DIR}/.env"
+env_file="${INSTALL_DIR}/.env"
+if [ -f "$env_file" ]; then
+    grep -v '^VERSION=' "$env_file" > "${env_file}.tmp" || true
+    printf "VERSION=edge\n" >> "${env_file}.tmp"
+    mv "${env_file}.tmp" "$env_file"
+else
+    printf "VERSION=edge\n" > "$env_file"
+fi
 ok "Channel set to edge"
 
 # ── Step 6: Pull Images ─────────────────────────────────────────────

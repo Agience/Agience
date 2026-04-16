@@ -351,8 +351,8 @@ def require_platform_admin(
 
 # Map action names to CRUDIASO grant flag attributes.
 # Actions whose grants cascade from a parent collection to direct child artifacts.
-# Self-only actions (update, invoke, own) require a direct grant on the artifact.
-_CASCADING_ACTIONS: frozenset = frozenset({"read", "create", "add", "delete", "search"})
+# Self-only actions (update, invoke, admin) require a direct grant on the artifact.
+_CASCADING_ACTIONS: frozenset = frozenset({"read", "create", "add", "delete", "share"})
 
 _ACTION_FLAG_MAP = {
     "create": "can_create",
@@ -361,8 +361,8 @@ _ACTION_FLAG_MAP = {
     "delete": "can_delete",
     "invoke": "can_invoke",
     "add": "can_add",
-    "search": "can_search",
-    "own": "can_own",
+    "share": "can_share",
+    "admin": "can_admin",
 }
 
 
@@ -380,8 +380,8 @@ def _synthetic_owner_grant(resource_id: str, user_id: str) -> GrantEntity:
         can_delete=True,
         can_invoke=True,
         can_add=True,
-        can_search=True,
-        can_own=True,
+        can_share=True,
+        can_admin=True,
         state="active",
     )
 

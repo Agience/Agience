@@ -14,8 +14,10 @@ import { defaultFactory } from '@/registry/viewer-map';
 import ContainerCardViewer from '@/components/containers/ContainerCardViewer';
 import CollectionArtifactViewer from '@/components/collections/CollectionArtifactViewer';
 import McpAppHost from '@/isolation/McpAppHost';
+import type { McpAppHostHandle, PickerRequestParams } from '@/isolation/McpAppHost';
 import { CollectionChip } from '@/components/common/CollectionChip';
 import { CollectionPicker } from '@/components/modals/CollectionPicker';
+import { BindingPicker } from '@/components/modals/BindingPicker';
 import { useDebouncedSave } from '@/hooks/useDebouncedSave';
 import { addArtifactToCollection, removeArtifactFromCollection } from '@/api/collections';
 import { readUiResource } from '@/api/mcp';
@@ -41,6 +43,7 @@ function ContextPanel({ artifact }: { artifact: Artifact }) {
 
 	const [editTitle, setEditTitle] = useState(ctx.title || ctx.filename || '');
 	const [editDescription, setEditDescription] = useState(ctx.description || '');
+	const [editContentType, setEditContentType] = useState(ctx.content_type || '');
 	const [editTags, setEditTags] = useState<string[]>(ctx.tags || []);
 	const [newTag, setNewTag] = useState('');
 
@@ -49,9 +52,10 @@ function ContextPanel({ artifact }: { artifact: Artifact }) {
 		return JSON.stringify({
 			title: editTitle,
 			description: editDescription,
+			content_type: editContentType,
 			tags: editTags,
 		});
-	}, [editTitle, editDescription, editTags]);
+	}, [editTitle, editDescription, editContentType, editTags]);
 
 	const { isSaving, lastSaved, resetTracking } = useDebouncedSave(contextPayload, {
 		delay: 1500,
@@ -60,6 +64,7 @@ function ContextPanel({ artifact }: { artifact: Artifact }) {
 				...ctx,
 				title: editTitle,
 				description: editDescription,
+				content_type: editContentType || undefined,
 				tags: editTags,
 			};
 			await updateArtifact({
@@ -75,9 +80,11 @@ function ContextPanel({ artifact }: { artifact: Artifact }) {
 		const c = safeParseArtifactContext(artifact.context);
 		const syncedTitle = c.title || c.filename || '';
 		const syncedDescription = c.description || '';
+		const syncedContentType = c.content_type || '';
 		const syncedTags = c.tags || [];
 		setEditTitle(syncedTitle);
 		setEditDescription(syncedDescription);
+		setEditContentType(syncedContentType);
 		setEditTags(syncedTags);
 		// Mark the synced payload as already-saved so the debounced save
 		// doesn't fire a redundant PATCH after an external context update
@@ -85,6 +92,7 @@ function ContextPanel({ artifact }: { artifact: Artifact }) {
 		resetTracking(JSON.stringify({
 			title: syncedTitle,
 			description: syncedDescription,
+			content_type: syncedContentType,
 			tags: syncedTags,
 		}));
 	}, [artifact.context, resetTracking]);
@@ -234,12 +242,20 @@ function ContextPanel({ artifact }: { artifact: Artifact }) {
 						</button>
 					</div>
 				)}
-				{ctx.content_type && (
-					<div className="flex items-center gap-2 text-xs text-gray-500">
-						<span className="font-medium">Type:</span>
-						<span>{ctx.content_type}</span>
-					</div>
-				)}
+				<div className="flex items-center gap-2 text-xs text-gray-500">
+					<span className="font-medium">Type:</span>
+					{isReadOnly ? (
+						<span>{editContentType || 'Not set'}</span>
+					) : (
+						<input
+							type="text"
+							value={editContentType}
+							onChange={(e) => setEditContentType(e.target.value)}
+							className="flex-1 px-1.5 py-0.5 text-xs border border-gray-300 rounded focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+							placeholder="e.g. text/markdown"
+						/>
+					)}
+				</div>
 				{ctx.size && (
 					<div className="flex items-center gap-2 text-xs text-gray-500">
 						<span className="font-medium">Size:</span>
@@ -409,6 +425,23 @@ export default function FloatingCardWindow(props: {
 	// true when failure is a connectivity issue (server down / unreachable)
 	const [mcpServerDown, setMcpServerDown] = useState(false);
 	const [mcpFetchKey, setMcpFetchKey] = useState(0);
+
+	// Binding picker state
+	const mcpAppRef = useRef<McpAppHostHandle>(null);
+	const [bindingPickerOpen, setBindingPickerOpen] = useState(false);
+	const [bindingPickerParams, setBindingPickerParams] = useState<PickerRequestParams | null>(null);
+
+	const handlePickerRequest = useCallback((params: PickerRequestParams) => {
+		setBindingPickerParams(params);
+		setBindingPickerOpen(true);
+	}, []);
+
+	const handlePickerSelect = useCallback((artifactId: string) => {
+		mcpAppRef.current?.sendPickerResult({ artifact_id: artifactId });
+		setBindingPickerOpen(false);
+		setBindingPickerParams(null);
+	}, []);
+
 	useEffect(() => {
 		if (!contentType?.resourceUri || !contentType?.resourceServer) {
 			setMcpAppHtml(null);
@@ -715,13 +748,23 @@ export default function FloatingCardWindow(props: {
 			}
 			if (mcpAppHtml) {
 				return (
-					<McpAppHost
-						artifact={artifact}
-						html={mcpAppHtml}
-						resourceServer={contentType?.resourceServer ?? undefined}
-						onOpenCollection={onOpenCollection}
-						onOpenArtifact={onOpenArtifact}
-					/>
+					<>
+						<McpAppHost
+							ref={mcpAppRef}
+							artifact={artifact}
+							html={mcpAppHtml}
+							resourceServer={contentType?.resourceServer ?? undefined}
+							onOpenCollection={onOpenCollection}
+							onOpenArtifact={onOpenArtifact}
+							onPickerRequest={handlePickerRequest}
+						/>
+						<BindingPicker
+							open={bindingPickerOpen}
+							onClose={() => { setBindingPickerOpen(false); setBindingPickerParams(null); }}
+							onSelect={handlePickerSelect}
+							label={bindingPickerParams?.label}
+						/>
+					</>
 				);
 			}
 		}

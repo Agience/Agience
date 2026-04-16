@@ -48,7 +48,7 @@
     },
     "search": {
       "enabled": true,
-      "requires_grant": "search",
+      "requires_grant": "read",
       "dispatch": { "kind": "native", "target": "search_service.search" }
     }
   },

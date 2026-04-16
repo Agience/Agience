@@ -122,7 +122,14 @@ Write-Ok "Compose file downloaded"
 
 # ── Step 4b: Set edge channel ───────────────────────────────────────
 
-Set-Content -Path (Join-Path $InstallDir '.env') -Value 'VERSION=edge' -Encoding ASCII
+$envFile = Join-Path $InstallDir '.env'
+if (Test-Path $envFile) {
+    $lines = Get-Content $envFile | Where-Object { $_ -notmatch '^VERSION=' }
+    $lines += 'VERSION=edge'
+    Set-Content -Path $envFile -Value $lines -Encoding ASCII
+} else {
+    Set-Content -Path $envFile -Value 'VERSION=edge' -Encoding ASCII
+}
 Write-Ok "Channel set to edge"
 
 # ── Step 5: Pull Images ──────────────────────────────────────────────

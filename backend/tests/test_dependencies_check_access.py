@@ -80,8 +80,8 @@ def _grant(**overrides) -> GrantEntity:
         can_delete=overrides.get("can_delete", False),
         can_invoke=overrides.get("can_invoke", False),
         can_add=overrides.get("can_add", False),
-        can_search=overrides.get("can_search", False),
-        can_own=overrides.get("can_own", False),
+        can_share=overrides.get("can_share", False),
+        can_admin=overrides.get("can_admin", False),
         state="active",
     )
 
@@ -99,7 +99,7 @@ class TestActionMapping:
 
     def test_action_map_covers_full_crudiaso(self):
         assert set(_ACTION_FLAG_MAP) == {
-            "create", "read", "update", "delete", "invoke", "add", "search", "own"
+            "create", "read", "update", "delete", "invoke", "add", "share", "admin"
         }
 
 
@@ -169,8 +169,8 @@ class TestAuthorization:
                 "can_delete",
                 "can_invoke",
                 "can_add",
-                "can_search",
-                "can_own",
+                "can_share",
+                "can_admin",
             )
         )
 

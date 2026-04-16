@@ -63,6 +63,9 @@ MCP_HOST: str = os.getenv("MCP_HOST", "0.0.0.0")
 MCP_PORT: int = int(os.getenv("MCP_PORT", "8087"))
 SRS_HTTP_API: str = os.getenv("SRS_HTTP_API", "http://localhost:1985").rstrip("/")
 STREAM_INGEST_URL: str = os.getenv("STREAM_INGEST_URL", "rtmp://localhost:1936/live").rstrip("/")
+# Optional: LLM connection artifact ID used by the PDF metadata extraction step.
+# If unset, metadata extraction is skipped.
+ASTRA_LLM_CONNECTION_ARTIFACT_ID: str = os.getenv("ASTRA_LLM_CONNECTION_ARTIFACT_ID", "")
 
 
 # ---------------------------------------------------------------------------
@@ -723,21 +726,52 @@ async def ingest_pipeline(
     if not extracted_text:
         return json.dumps({"status": "error", "step": "pdf_extract", "reason": "extracted text artifact is empty", "steps": steps})
 
-    # Step 3 — LLM metadata extraction
+    # Step 3 — LLM metadata extraction via Verso's invoke_llm
+    if not ASTRA_LLM_CONNECTION_ARTIFACT_ID:
+        steps.append({"step": "metadata_extract", "result": {"status": "skipped", "reason": "ASTRA_LLM_CONNECTION_ARTIFACT_ID not configured"}})
+        return json.dumps({"status": "partial", "artifact_id": artifact_id, "text_artifact_id": text_artifact_id, "reason": "LLM metadata extraction skipped", "steps": steps})
+
     truncated_text = extracted_text[:_MAX_LLM_TEXT_CHARS]
-    llm_input = f"{_METADATA_EXTRACTION_PROMPT}\n\n---\n\nDocument text:\n{truncated_text}"
+    llm_messages = [
+        {"role": "system", "content": _METADATA_EXTRACTION_PROMPT},
+        {"role": "user", "content": f"Document text:\n{truncated_text}"},
+    ]
 
     try:
         async with httpx.AsyncClient() as client:
             llm_resp = await client.post(
-                f"{AGIENCE_API_URI}/agents/invoke",
+                f"{AGIENCE_API_URI}/artifacts/verso/invoke",
                 headers=await _user_headers(),
-                json={"input": llm_input},
+                json={
+                    "name": "invoke_llm",
+                    "arguments": {
+                        "connection_artifact_id": ASTRA_LLM_CONNECTION_ARTIFACT_ID,
+                        "workspace_id": workspace_id,
+                        "messages": json.dumps(llm_messages),
+                    },
+                    "workspace_id": workspace_id,
+                },
                 timeout=120,
             )
         llm_resp.raise_for_status()
         llm_data = llm_resp.json()
-        llm_output = llm_data.get("output", "")
+        # verso.invoke_llm returns JSON-encoded {"text": ..., "provider": ..., ...}
+        # dispatched through the platform, so llm_data may wrap the MCP tool
+        # result in {"result": {"content": [{"type": "text", "text": "..."}]}}.
+        llm_output = ""
+        if isinstance(llm_data, dict):
+            result = llm_data.get("result") or llm_data
+            if isinstance(result, dict):
+                content_list = result.get("content")
+                if isinstance(content_list, list) and content_list:
+                    payload_text = content_list[0].get("text", "") if isinstance(content_list[0], dict) else ""
+                    try:
+                        payload = json.loads(payload_text) if payload_text else {}
+                    except json.JSONDecodeError:
+                        payload = {"text": payload_text}
+                    llm_output = payload.get("text") if isinstance(payload, dict) else ""
+                else:
+                    llm_output = result.get("text", "") if isinstance(result, dict) else ""
     except httpx.HTTPError as exc:
         steps.append({"step": "metadata_extract", "result": {"status": "error", "reason": str(exc)}})
         return json.dumps({"status": "partial", "artifact_id": artifact_id, "text_artifact_id": text_artifact_id, "reason": f"LLM metadata extraction failed: {exc}", "steps": steps})

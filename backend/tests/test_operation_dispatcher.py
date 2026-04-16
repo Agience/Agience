@@ -279,8 +279,8 @@ class _FakeGrant:
         self.can_create = flags.get("create", False)
         self.can_delete = flags.get("delete", False)
         self.can_add = flags.get("add", False)
-        self.can_search = flags.get("search", False)
-        self.can_own = flags.get("own", False)
+        self.can_share = flags.get("share", False)
+        self.can_admin = flags.get("admin", False)
         self.resource_id = flags.get("resource_id")
         self.resource_type = flags.get("resource_type")
 
@@ -485,7 +485,7 @@ def test_server_credential_type_declares_rotate_and_publish_jwk():
     )
     assert rotate is not None
     assert rotate.enabled is True
-    assert rotate.requires_grant == "own"
+    assert rotate.requires_grant == "admin"
     assert rotate.dispatch["kind"] == "native"
     assert rotate.audit is True
     assert any(e["event"] == "server_credential.rotated" for e in rotate.emits)
@@ -681,7 +681,7 @@ async def test_custom_op_dispatches_native_target(monkeypatch):
     ctx = DispatchContext(
         user_id="u1",
         actor_id="u1",
-        grants=[_FakeGrant(own=True)],
+        grants=[_FakeGrant(admin=True)],
         arango_db=None,
     )
 

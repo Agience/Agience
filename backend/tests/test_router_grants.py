@@ -5,7 +5,7 @@ Covers the public surface:
   - POST /grants — owner check + grant creation, invite-with-token path
   - POST /grants/claim — happy path, expired/revoked rejected, target_entity match
   - GET /grants — owner check + listing
-  - GET /grants/{id} — visibility (grantee / granter / can_own / 404)
+  - GET /grants/{id} — visibility (grantee / granter / can_admin / 404)
   - PATCH /grants/{id} — state revocation stamps revoked_at + revoked_by
   - DELETE /grants/{id} — soft-revoke
   - 404 on unknown grant
@@ -94,7 +94,7 @@ class TestCreateGrant:
             _set_owner_doc(arango, owner_id="someone-else")
             with (
                 patch(
-                    "routers.grants_router.db_get_active_grants", return_value=[]
+                    "services.grant_service.get_active_grants_for_principal_resource", return_value=[]
                 ),
                 patch("core.dependencies.get_arango_db", return_value=arango),
             ):
@@ -217,7 +217,7 @@ class TestReadGrant:
             with (
                 patch("routers.grants_router.get_grant_by_id", return_value=g),
                 patch(
-                    "routers.grants_router.db_get_active_grants", return_value=[]
+                    "services.grant_service.get_active_grants_for_principal_resource", return_value=[]
                 ),
             ):
                 r = await client.get("/grants/g-1")
@@ -264,10 +264,17 @@ class TestRevokeGrant:
 # ---------------------------------------------------------------------------
 
 class TestClaimInvite:
+    """Tests for POST /grants/claim.
+
+    The endpoint delegates to ``grant_service.claim_invite``; mocks target
+    that module's direct imports of ``get_active_grants_for_grantee``,
+    ``create_grant``, and ``update_grant``.
+    """
+
     @pytest.mark.asyncio
     async def test_404_when_no_matching_invite(self, client: AsyncClient):
         with patch(
-            "db.arango.get_active_grants_for_grantee", return_value=[]
+            "services.grant_service.get_active_grants_for_grantee", return_value=[]
         ):
             r = await client.post("/grants/claim", json={"token": "agc_xxx"})
         assert r.status_code == 404
@@ -280,7 +287,7 @@ class TestClaimInvite:
             state=GrantEntity.STATE_REVOKED,
         )
         with patch(
-            "db.arango.get_active_grants_for_grantee", return_value=[invite]
+            "services.grant_service.get_active_grants_for_grantee", return_value=[invite]
         ):
             r = await client.post("/grants/claim", json={"token": "agc_xxx"})
         assert r.status_code == 410
@@ -297,7 +304,8 @@ class TestClaimInvite:
         wrong_user = SimpleNamespace(email="other@example.com")
         with (
             patch(
-                "db.arango.get_active_grants_for_grantee", return_value=[invite]
+                "services.grant_service.get_active_grants_for_grantee",
+                return_value=[invite],
             ),
             patch(
                 "services.person_service.get_user_by_id", return_value=wrong_user
@@ -332,10 +340,11 @@ class TestClaimInvite:
 
         with (
             patch(
-                "db.arango.get_active_grants_for_grantee", return_value=[invite]
+                "services.grant_service.get_active_grants_for_grantee",
+                return_value=[invite],
             ),
-            patch("routers.grants_router.create_grant", side_effect=fake_create),
-            patch("routers.grants_router.update_grant", side_effect=fake_update),
+            patch("services.grant_service.create_grant", side_effect=fake_create),
+            patch("services.grant_service.update_grant", side_effect=fake_update),
         ):
             r = await client.post("/grants/claim", json={"token": "agc_xxx"})
 
@@ -361,11 +370,12 @@ class TestClaimInvite:
 
         with (
             patch(
-                "db.arango.get_active_grants_for_grantee", return_value=[invite]
+                "services.grant_service.get_active_grants_for_grantee",
+                return_value=[invite],
             ),
-            patch("routers.grants_router.create_grant", side_effect=lambda db, g: g),
+            patch("services.grant_service.create_grant", side_effect=lambda db, g: g),
             patch(
-                "routers.grants_router.update_grant",
+                "services.grant_service.update_grant",
                 side_effect=lambda db, g: captured.setdefault("g", g) or g,
             ),
         ):

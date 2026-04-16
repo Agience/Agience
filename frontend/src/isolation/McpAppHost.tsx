@@ -7,7 +7,7 @@
  * Spec: https://modelcontextprotocol.io/extensions/apps/overview (SEP-1865)
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import type { Artifact } from '@/context/workspace/workspace.types';
 import { useWorkspace } from '@/hooks/useWorkspace';
 import { useWorkspaces } from '@/hooks/useWorkspaces';
@@ -16,6 +16,8 @@ import { subscribeEvents } from '@/api/events';
 import { proxyToolCall } from '@/api/mcp';
 import { buildHostContext } from './hostContext';
 import { buildCspMetaTag } from './csp';
+import { getAgienceDragPayload } from '@/dnd/agienceDrag';
+import { safeParseArtifactContext } from '@/utils/artifactContext';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -34,6 +36,14 @@ interface McpAppHostProps {
   onOpenArtifact?: (artifact: Artifact) => void;
   /** Callback when the view requests opening a collection. */
   onOpenCollection?: (collectionId: string) => void;
+  /** Callback when the view requests a picker modal. Host opens picker and posts result back. */
+  onPickerRequest?: (params: PickerRequestParams) => void;
+}
+
+export interface PickerRequestParams {
+  role: string;
+  multi?: boolean;
+  label?: string;
 }
 
 export interface CspDomains {
@@ -60,15 +70,21 @@ interface JsonRpcNotification {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function McpAppHost({
+export interface McpAppHostHandle {
+  sendPickerResult: (result: { artifact_id?: string }) => void;
+}
+
+const McpAppHost = forwardRef<McpAppHostHandle, McpAppHostProps>(function McpAppHost({
   artifact,
   html,
   resourceServer: _resourceServer,
   csp,
   onOpenArtifact,
   onOpenCollection,
-}: McpAppHostProps) {
+  onPickerRequest,
+}: McpAppHostProps, ref) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const dropWrapperRef = useRef<HTMLDivElement>(null);
   const [initialized, setInitialized] = useState(false);
   const { updateArtifact, createArtifact } = useWorkspace();
   const { activeWorkspaceId } = useWorkspaces();
@@ -76,6 +92,17 @@ export default function McpAppHost({
 
   // Assemble the HTML with CSP meta tag injected
   const srcdocHtml = buildCspMetaTag(csp) + html;
+
+  // Expose sendPickerResult to parent via ref
+  // (defined after sendNotification — hoisted within closure)
+  useImperativeHandle(ref, () => ({
+    sendPickerResult(result: { artifact_id?: string }) {
+      iframeRef.current?.contentWindow?.postMessage(
+        { jsonrpc: '2.0', method: 'ui/notifications/picker-result', params: result },
+        '*',
+      );
+    },
+  }));
 
   // ------ postMessage handler ------
   const handleMessage = useCallback(
@@ -96,7 +123,7 @@ export default function McpAppHost({
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [artifact, updateArtifact, createArtifact, activeWorkspaceId, onOpenArtifact, onOpenCollection],
+    [artifact, resolvedContent, updateArtifact, createArtifact, activeWorkspaceId, onOpenArtifact, onOpenCollection],
   );
 
   function sendResponse(id: number, result: unknown) {
@@ -146,9 +173,7 @@ export default function McpAppHost({
               type: 'text',
               text: JSON.stringify({
                 artifact_id: artifact.id,
-                context: typeof artifact.context === 'string'
-                  ? JSON.parse(artifact.context)
-                  : artifact.context,
+                context: safeParseArtifactContext(artifact.context),
                 content: resolvedContent,
               }),
             },
@@ -297,6 +322,14 @@ export default function McpAppHost({
         break;
       }
 
+      case 'ui/open-picker': {
+        const params = notif.params as unknown as PickerRequestParams;
+        if (onPickerRequest) {
+          onPickerRequest(params);
+        }
+        break;
+      }
+
       case 'notifications/message':
         // Logging from the view
         console.debug('[McpApp]', notif.params);
@@ -347,13 +380,64 @@ export default function McpAppHost({
     return unsub;
   }, [initialized, artifact.id, activeWorkspaceId]);
 
+  // ------ Drag-drop bridge ------
+  // The iframe runs under sandbox="allow-scripts" (no allow-same-origin),
+  // so DataTransfer can't cross the frame boundary natively. We forward
+  // drag events from the host wrapper div to the iframe via postMessage.
+  function getIframeRelativeCoords(e: React.DragEvent): { x: number; y: number } {
+    const iframe = iframeRef.current;
+    if (!iframe) return { x: e.clientX, y: e.clientY };
+    const rect = iframe.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+
+  function handleDragEnter(e: React.DragEvent) {
+    e.preventDefault();
+    const payload = getAgienceDragPayload(e.dataTransfer);
+    if (!payload) return;
+    const coords = getIframeRelativeCoords(e);
+    sendNotification('ui/notifications/drag-enter', { payload, ...coords } as Record<string, unknown>);
+  }
+
+  function handleDragOver(e: React.DragEvent) {
+    e.preventDefault();
+    const payload = getAgienceDragPayload(e.dataTransfer);
+    if (!payload) return;
+    const coords = getIframeRelativeCoords(e);
+    sendNotification('ui/notifications/drag-over', { payload, ...coords } as Record<string, unknown>);
+  }
+
+  function handleDragLeave(e: React.DragEvent) {
+    const coords = getIframeRelativeCoords(e);
+    sendNotification('ui/notifications/drag-leave', { ...coords } as Record<string, unknown>);
+  }
+
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    const payload = getAgienceDragPayload(e.dataTransfer);
+    if (!payload) return;
+    const coords = getIframeRelativeCoords(e);
+    sendNotification('ui/notifications/drag-drop', { payload, ...coords } as Record<string, unknown>);
+  }
+
   return (
-    <iframe
-      ref={iframeRef}
-      srcDoc={srcdocHtml}
-      sandbox="allow-scripts"
-      style={{ width: '100%', height: '100%', border: 'none' }}
-      title="MCP App View"
-    />
+    <div
+      ref={dropWrapperRef}
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      style={{ width: '100%', height: '100%', position: 'relative' }}
+    >
+      <iframe
+        ref={iframeRef}
+        srcDoc={srcdocHtml}
+        sandbox="allow-scripts"
+        style={{ width: '100%', height: '100%', border: 'none', pointerEvents: 'auto' }}
+        title="MCP App View"
+      />
+    </div>
   );
-}
+});
+
+export default McpAppHost;

@@ -142,13 +142,35 @@ class TestVerifyOtp:
         with patch("db.arango_identity.get_valid_otp_codes", return_value=[]):
             assert otp_service.verify_otp(MagicMock(), "u@e.com", "123456") is None
 
-    def test_orphan_code_no_person_returns_none(self):
+    def test_verified_code_auto_creates_person(self):
+        """Unknown emails auto-create a person (aligns with OIDC auto-create)."""
+        from types import SimpleNamespace
+        fake_person = SimpleNamespace(id="new-person-id")
         doc = self._otp_doc("123456")
         with (
             patch("db.arango_identity.get_valid_otp_codes", return_value=[doc]),
             patch("db.arango_identity.increment_otp_attempts"),
             patch("db.arango_identity.mark_otp_used"),
-            patch("db.arango_identity.get_person_by_email", return_value=None),
+            patch(
+                "services.person_service.get_or_create_user_by_email",
+                return_value=fake_person,
+            ) as mock_create,
+        ):
+            result = otp_service.verify_otp(MagicMock(), "u@e.com", "123456")
+        assert result == "new-person-id"
+        mock_create.assert_called_once()
+
+    def test_verified_code_returns_none_if_creation_denied(self):
+        """PermissionError from the access gate returns None (not 500)."""
+        doc = self._otp_doc("123456")
+        with (
+            patch("db.arango_identity.get_valid_otp_codes", return_value=[doc]),
+            patch("db.arango_identity.increment_otp_attempts"),
+            patch("db.arango_identity.mark_otp_used"),
+            patch(
+                "services.person_service.get_or_create_user_by_email",
+                side_effect=PermissionError("not allowed"),
+            ),
         ):
             assert otp_service.verify_otp(MagicMock(), "u@e.com", "123456") is None
 
