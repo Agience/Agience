@@ -1,0 +1,8 @@
+{
+  "content_type": "application/vnd.agience.workspace+json",
+  "version": 1,
+  "inherits": [
+    "application/json"
+  ],
+  "description": "Agience Workspace — bindings editor served by Atlas."
+}

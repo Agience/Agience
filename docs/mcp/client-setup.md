@@ -115,4 +115,4 @@ Authorization: Bearer <token>
 - `Failed to discover MCP endpoint:`
 - HTTP 401 = auth fail, 404 = wrong URL
 
-**"Authorization header not being sent"** — open browser DevTools → Network tab, find the request to `/mcp/workspaces/{id}/servers`, and confirm the `Authorization` header is present.
+**"Authorization header not being sent"** — open browser DevTools → Network tab, find the request to `/mcp/servers`, and confirm the `Authorization` header is present.

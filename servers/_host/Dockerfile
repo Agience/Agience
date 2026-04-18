@@ -30,6 +30,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 # ── Shared auth module ────────────────────────────────────────────────────────
 COPY servers/_shared/agience_server_auth.py agience_server_auth.py
+COPY servers/_shared/artifact_helpers.py artifact_helpers.py
 
 # ── Server modules ────────────────────────────────────────────────────────────
 COPY servers/aria/server.py            aria_server.py
@@ -51,6 +52,7 @@ COPY servers/astra/stream_routes.py    stream_routes.py
 RUN mkdir -p ui/application
 COPY servers/aria/ui/application/      ui/application/
 COPY servers/astra/ui/application/     ui/application/
+COPY servers/atlas/ui/application/     ui/application/
 COPY servers/sage/ui/application/     ui/application/
 COPY servers/nexus/ui/application/     ui/application/
 COPY servers/ophan/ui/application/     ui/application/

@@ -1,7 +1,7 @@
 ﻿# Artifact Model and Referencing Architecture
 
 Status: **Reference**
-Date: 2026-04-01
+Date: 2026-04-17
 
 ---
 
@@ -18,10 +18,7 @@ This makes Agience act as:
 
 ## Core concept: artifacts as substrate
 
-Everything in Agience is an artifact - a document with `content` + `context` metadata. Artifacts come in two flavors:
-
-1. **Leaf artifacts** - contain information (text, files, transcripts, etc.)
-2. **Boundary artifacts** - contain other artifacts or references to artifacts (workspaces, collections, operators, MCP resources)
+Everything in Agience is an artifact — a document with `content` + `context` metadata. Any artifact can be a container (has children via graph edges) or a leaf (no children). Containment is a graph property, not a type property.
 
 ### Artifact Display Modes
 
@@ -105,7 +102,7 @@ Open Collection artifact → Shows artifacts inside
 Each workspace is a "view" into the graph:
 - What nodes (artifacts) you're looking at
 - What edges (references) you're exploring
-- What boundaries (collections, operators) you've opened
+- What containers (collections, operators) you've opened
 
 **The Integration Insight**:
 
@@ -191,12 +188,10 @@ This is why it feels different - you're not "launching apps to work on files". Y
   id: string,                 // ArangoDB document key
   collection_id: string,      // Container ID (workspace is a collection)
   root_id?: string,           // If pulled from collection
-  base_version_id?: string,   // If pulled from collection
   content: string,            // Text content or binary ref
   context: object,            // JSON metadata (see below)
   state: "draft" | "committed" | "archived",
-  prev_state?: string,        // For revert
-  order_key: string,          // Fractional index (base-62)
+  content_type?: string,      // MIME type — stored in artifact.context.content_type
   created_time: datetime,
   modified_time: datetime
 }
@@ -264,7 +259,7 @@ type ArtifactContext = {
   uri?: string;           // For external content
   size?: number;          // File size in bytes
 
-  // Operator-specific
+  // Operator-specific (note: field name 'order' is legacy; OrderSpec is the legacy code type name)
   order?: {
     spec: OrderSpec;       // Complete operator configuration
   };
@@ -302,10 +297,10 @@ type ArtifactContext = {
 
 **Pattern**: Operator spec stores arrays of artifact IDs (current code field: `artifacts`)
 
-**Example** (Operator artifact context):
+**Example** (Operator artifact context — note: `order` is the legacy code field name for the operator spec):
 ```json
 {
-  "type": "order",
+  "type": "transform",
   "title": "Customer Analysis Operator",
   "content_type": "application/vnd.agience.transform+json",
   "order": {
@@ -341,45 +336,16 @@ type ArtifactContext = {
 - If a referenced artifact is deleted from workspace, the operator panel shows "Artifact not found"
 - When you commit an operator artifact, the artifact IDs in the spec are committed as-is
 
-### Workspace/collection as artifacts
+### Container artifacts (workspaces and collections)
 
-**Pattern**: Boundary artifacts with child references
+**Pattern**: Container artifacts with children linked via `collection_artifacts` edges
 
-**Example** (Workspace artifact):
-```json
-{
-  "type": "workspace",
-  "title": "Q1 Analysis",
-  "content_type": "application/vnd.agience.workspace+json",
-  "workspace": {
-    "id": "workspace-uuid",
-    "artifact_ids": ["artifact-1", "artifact-2", "artifact-3"]  // Optional: explicit list
-  }
-}
-```
+A workspace IS a collection IS an artifact. Containers are just artifacts with `content_type` set to `application/vnd.agience.workspace+json` or `application/vnd.agience.collection+json`. Children are linked by graph edges, not by ID lists embedded in context.
 
 **Behavior**:
-- Opening a workspace artifact navigates to that workspace's artifact grid
-- Optionally filters to show only `artifact_ids` if specified (subset view)
-- Dropping a workspace artifact into an operator means "use all artifacts in this workspace"
-
-**Example** (Collection artifact):
-```json
-{
-  "type": "collection",
-  "title": "Customer Insights",
-  "content_type": "application/vnd.agience.collection+json",
-  "collection": {
-    "id": "collection-uuid",
-    "card_root_ids": ["root-1", "root-2"]  // Optional: explicit list
-  }
-}
-```
-
-**Behavior**:
-- Opening a collection artifact shows that collection's committed artifacts
-- Dropping a collection artifact into an operator means "use these artifacts as input"
-- Collections can be nested (collection contains collection references)
+- Opening a container artifact navigates to its artifact grid
+- Dropping a container artifact into an operator means "use all artifacts in this container"
+- Any artifact can have children (containment is a graph property)
 
 ### MCP resource artifacts
 
@@ -436,7 +402,7 @@ Source artifacts embody "everything is an artifact": the integration config, aut
 
 ### 1. One-Way Pointers Only
 
-- Artifacts can reference other artifacts via IDs in operator specs (e.g. `input.cards`, `resources.cards`)
+- Artifacts can reference other artifacts via IDs in operator specs (e.g. `input.artifacts`, `resources.artifacts`)
 - **No automatic back-references** - if Artifact A references Artifact B, B does not know about A
 - To find "who references this artifact?", you must scan all artifacts (expensive, not indexed)
 
@@ -471,7 +437,7 @@ Source artifacts embody "everything is an artifact": the integration config, aut
 
 **Collection Artifacts**:
 - Delete sets `state: "archived"` (soft delete)
-- Flows/references still resolve to archived artifact (with warning in UI)
+- References still resolve to archived artifact (with warning in UI)
 - Hard delete is never exposed to users (audit requirement)
 
 ---
@@ -499,13 +465,13 @@ Source artifacts embody "everything is an artifact": the integration config, aut
 **What goes into operator panels**:
 - **Input panel**: The specific artifacts this operator should process
   - Example: "These 5 meeting transcripts"
-  - IDs stored in `spec.panelData.input.cards[]`
+  - IDs stored in `spec.panelData.input.artifacts[]`
 - **Resources panel**: Background knowledge artifacts
   - Example: "Company wiki + product docs"
-  - IDs stored in `spec.panelData.resources.cards[]`
+  - IDs stored in `spec.panelData.resources.artifacts[]`
 - **Prompts panel**: Instruction artifacts
   - Example: "Summarization prompt"
-  - IDs stored in `spec.panelData.prompts.cards[]`
+  - IDs stored in `spec.panelData.prompts.artifacts[]`
 
 **What does NOT go**:
 - Large datasets (use workspace/collection reference instead)
@@ -548,7 +514,7 @@ Source artifacts embody "everything is an artifact": the integration config, aut
 - Summary artifact: `state: draft` → edit → commit to "Meetings" collection
 
 **References**:
-- Operator spec stores: `input.cards: ["trans-1", "trans-2", "trans-3"]`
+- Operator spec stores: `input.artifacts: ["trans-1", "trans-2", "trans-3"]`
 
 ### Use case 2: Customer research workspace
 
@@ -561,7 +527,7 @@ Source artifacts embody "everything is an artifact": the integration config, aut
 **Artifact structure**:
 ```
 Workspace "Q1 Research"
-├── MCP Server: Slack (boundary artifact)
+├── MCP Server: Slack (container artifact)
 │   ├── #customer-feedback (pulled as child)
 │   ├── #support-tickets (pulled as child)
 │   └── #feature-requests (pulled as child)
@@ -573,7 +539,7 @@ Workspace "Q1 Research"
 **Commit strategy**:
 - Slack message artifacts → commit to "Customer Insights" collection
 - Operator artifact → commit to "Operators" collection
-- Don't commit MCP server artifact (it's a runtime boundary)
+- Don't commit MCP server artifact (it's a runtime container)
 
 ### Use case 3: Nested workspaces
 
@@ -589,13 +555,13 @@ Workspace "Q1 Research"
 **Artifact structure**:
 ```
 Workspace "2026 Planning"
-├── Workspace: Q1 Goals (boundary artifact)
+├── Workspace: Q1 Goals (container artifact)
 │   ├── Artifact: OKR 1
 │   ├── Artifact: OKR 2
 │   └── Artifact: Budget
-├── Workspace: Q2 Goals (boundary artifact)
+├── Workspace: Q2 Goals (container artifact)
 │   └── ...
-└── Order: Quarterly Rollup
+└── Operator: Quarterly Rollup
     └── Input: Q1 workspace, Q2 workspace (references)
 ```
 

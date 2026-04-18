@@ -90,8 +90,8 @@ jobs:
           RELEASE_LINE="${VERSION%.*}"
           TAGS=("stable" "$RELEASE_LINE" "$VERSION")
 
-          IMAGES=(agience-backend agience-frontend agience-servers agience-stream agience-init)
-          OUTPUT_NAMES=(backend frontend servers stream init)
+          IMAGES=(agience-backend agience-frontend agience-servers agience-stream agience-init agience-home)
+          OUTPUT_NAMES=(backend frontend servers stream init home)
 
           for i in "${!IMAGES[@]}"; do
             IMG="${IMAGES[$i]}"
@@ -157,5 +157,15 @@ jobs:
           file: docker/Dockerfile.init
           push: true
           tags: ${{ steps.tags.outputs.init }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push home Caddy image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: packaging/install/home/Dockerfile.caddy
+          push: true
+          tags: ${{ steps.tags.outputs.home }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

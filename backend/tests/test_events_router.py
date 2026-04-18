@@ -67,7 +67,6 @@ class _Grant:
         for k in ("read", "update", "create", "delete", "invoke", "add", "search", "own"):
             setattr(self, f"can_{k}", flags.get(k, False))
         self.resource_id = flags.get("resource_id")
-        self.resource_type = flags.get("resource_type")
 
 
 def _auth(grants=(), principal_id=None):

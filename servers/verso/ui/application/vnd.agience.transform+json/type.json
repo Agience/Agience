@@ -4,7 +4,7 @@
   "inherits": [
     "application/json"
   ],
-  "description": "Agience Transform \u2014 a named, executable transformation step invokable via POST /agents/invoke.",
+  "description": "Agience Transform \u2014 a named, executable transformation step invokable via POST /artifacts/{id}/invoke. For run.type=mcp-tool, dispatch resolves the server via a relationship edge (@relationship.server) and the tool from context.run.tool. For run.type in {workflow, llm, transform-ref}, dispatch falls through to the orchestrator relationship edge (@relationship.orchestrator) which runs execute_transform.",
   "context_schema": {
     "transform": {
       "type": "object",
@@ -79,8 +79,7 @@
         },
         "server": {
           "type": "string",
-          "default": "astra",
-          "description": "MCP server name (type=mcp-tool only). Use an explicit persona server such as 'astra' for ingestion transforms, or 'agience-core' when the tool is owned by core itself."
+          "description": "DEPRECATED — server relationship is now defined by an edge, not a context field. Retained for schema compatibility during migration."
         },
         "tool": {
           "type": "string",
@@ -217,8 +216,10 @@
       "requires_grant": "invoke",
       "dispatch": {
         "kind": "mcp_tool",
-        "server_ref": "$.context.run.server",
-        "tool_ref": "$.context.run.tool"
+        "server_ref": "@relationship.server",
+        "tool_ref": "$.context.run.tool",
+        "orchestrator_server_ref": "@relationship.orchestrator",
+        "orchestrator_tool": "execute_transform"
       },
       "input_schema": {
         "type": "object",

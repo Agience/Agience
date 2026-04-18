@@ -320,7 +320,7 @@ pytest tests/
 Run a specific suite:
 
 ```bash
-pytest tests/test_router_workspaces.py
+pytest tests/test_router_artifacts.py
 pytest tests/test_service_workspace.py
 ```
 

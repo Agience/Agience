@@ -12,25 +12,49 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Dict, List, Optional
+import uuid
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Set
 
 from mcp_client.adapter import fetch_server_info
-from mcp_client.contracts import MCPServerInfo, MCPServerConfig
+from mcp_client.contracts import MCPServerInfo, MCPServerConfig, MCPPrompt, MCPResourceDesc, MCPTool
 from mcp_client.local import create_agience_core_client
 
 from arango.database import StandardDatabase
+
+from entities.artifact import Artifact as ArtifactEntity
+from entities.collection import COLLECTION_CONTENT_TYPE
 
 from . import collection_service as col_svc
 from . import desktop_host_relay_service
 from . import auth_service
 from . import server_registry
+from .bootstrap_types import AGIENCE_CORE_SLUG
+from .platform_topology import get_id as _topo_get_id
 from db import arango as arango_db_module
 from db.arango import (
+    add_artifact_to_collection as db_add_artifact_to_collection,
+    create_artifact as db_create_artifact,
+    get_artifact as db_get_artifact,
+    update_artifact as db_update_artifact,
     get_active_collection_ids_for_user as db_get_active_collection_ids,
     list_collection_artifacts as _db_list_collection_artifacts,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _agience_core_id() -> str:
+    """Return the bootstrap UUID for the agience-core kernel MCP server."""
+    return _topo_get_id(AGIENCE_CORE_SLUG)
+
+
+def _is_desktop_relay(server_id: str, user_id: str) -> bool:
+    """True if *server_id* is an active desktop-host relay session or a local-mcp server."""
+    if server_id.startswith("local-mcp:"):
+        return True
+    session = desktop_host_relay_service.relay_manager.get_active_session(user_id)
+    return session is not None and session.session_id == server_id
 
 
 def _dict_to_ns(d: dict):
@@ -124,7 +148,7 @@ def _get_server_config(
     """Resolve an MCP server config.
 
     Resolution order:
-      1. ``agience-core`` -- returns None (caller handles built-in locally).
+      1. ``agience-core`` (by UUID) -- returns None (caller handles built-in locally).
       2. Manifest-registered builtin -- config from ``server_registry``.
       3. Workspace artifact -- if *workspace_id* is provided, looks up the artifact
          in that workspace (ArangoDB).
@@ -132,19 +156,19 @@ def _get_server_config(
 
     Raises :class:`ValueError` if the server cannot be resolved.
     """
-    if server_id == "agience-core":
+    if server_id == _agience_core_id():
         return None  # caller handles built-in separately
 
-    # Check manifest builtins — by name or by bootstrap UUID.
-    if server_registry.get_entry(server_id) is not None:
-        return server_registry.build_http_config(server_id)
+    # Check manifest builtins — by bootstrap UUID only.
     if server_registry.is_builtin_id(server_id):
         return server_registry.build_http_config_by_id(server_id)
 
     # Try workspace artifact first (if workspace context is available)
-    if workspace_id:
-        ws = arango_db_module.get_collection_by_id(db, workspace_id)
-        if ws and ws.created_by == user_id:
+    if workspace_id and user_id:
+        grants = arango_db_module.get_active_grants_for_principal_resource(
+            db, grantee_id=user_id, resource_id=workspace_id,
+        )
+        if any(getattr(g, "can_read", False) for g in grants):
             artifact = arango_db_module.get_artifact(db, server_id)
             if artifact and artifact.collection_id == workspace_id:
                 config = _parse_mcp_server_artifact(artifact)
@@ -383,6 +407,304 @@ def list_servers_from_collection(
 
 
 # ---------------------------------------------------------------------------
+# Capability content type constants (handler-owned, not kernel bootstrap)
+# ---------------------------------------------------------------------------
+
+_TOOL_CONTENT_TYPE = "application/vnd.agience.tool+json"
+_RESOURCE_CONTENT_TYPE = "application/vnd.agience.resource+json"
+_PROMPT_CONTENT_TYPE = "application/vnd.agience.prompt+json"
+
+_KIND_MAP = {
+    "tool": _TOOL_CONTENT_TYPE,
+    "resource": _RESOURCE_CONTENT_TYPE,
+    "prompt": _PROMPT_CONTENT_TYPE,
+}
+
+
+# ---------------------------------------------------------------------------
+# Capability materialization
+# ---------------------------------------------------------------------------
+
+def _deterministic_id(server_root_id: str, kind: str, name: str) -> str:
+    """Compute a deterministic UUID5 for a capability artifact."""
+    return str(uuid.uuid5(uuid.UUID(server_root_id), f"{kind}:{name}"))
+
+
+def _build_tool_context(tool: MCPTool) -> dict:
+    """Build artifact context dict for a tool capability."""
+    ctx: dict = {
+        "content_type": _TOOL_CONTENT_TYPE,
+        "tool_name": tool.name,
+    }
+    if tool.description:
+        ctx["description"] = tool.description
+    if tool.input_schema:
+        ctx["input_schema"] = tool.input_schema
+    return ctx
+
+
+def _build_resource_context(resource: MCPResourceDesc) -> dict:
+    """Build artifact context dict for a resource capability."""
+    ctx: dict = {
+        "content_type": _RESOURCE_CONTENT_TYPE,
+        "uri": resource.uri or resource.id,
+    }
+    if resource.content_type:
+        ctx["mime_type"] = resource.content_type
+    if resource.title:
+        ctx["description"] = resource.title
+    return ctx
+
+
+def _build_prompt_context(prompt: MCPPrompt) -> dict:
+    """Build artifact context dict for a prompt capability."""
+    ctx: dict = {
+        "content_type": _PROMPT_CONTENT_TYPE,
+        "prompt_name": prompt.name,
+    }
+    if prompt.description:
+        ctx["description"] = prompt.description
+    if prompt.arguments:
+        ctx["arguments"] = prompt.arguments
+    return ctx
+
+
+def _upsert_capability_artifact(
+    db: StandardDatabase,
+    *,
+    artifact_id: str,
+    collection_id: str,
+    content_type: str,
+    context: dict,
+    content: str,
+    user_id: str,
+) -> bool:
+    """Create or update a capability artifact. Returns True if created/updated."""
+    now = datetime.now(timezone.utc).isoformat()
+    context_str = json.dumps(context, separators=(",", ":"), ensure_ascii=False)
+    existing = db_get_artifact(db, artifact_id)
+
+    if existing is not None:
+        if existing.context == context_str and existing.state != ArtifactEntity.STATE_ARCHIVED:
+            return False
+        existing.context = context_str
+        existing.content = content
+        existing.state = ArtifactEntity.STATE_COMMITTED
+        existing.modified_by = user_id
+        existing.modified_time = now
+        db_update_artifact(db, existing)
+        return True
+
+    artifact = ArtifactEntity(
+        id=artifact_id,
+        root_id=artifact_id,
+        collection_id=collection_id,
+        state=ArtifactEntity.STATE_COMMITTED,
+        context=context_str,
+        content=content,
+        content_type=content_type,
+        created_by=user_id,
+        created_time=now,
+    )
+    db_create_artifact(db, artifact)
+    db_add_artifact_to_collection(
+        db, collection_id, artifact_id,
+        origin=True, propagate=["read", "invoke"],
+    )
+    return True
+
+
+def _ensure_subcollection(
+    db: StandardDatabase,
+    server_root_id: str,
+    kind: str,
+    label: str,
+    user_id: str,
+) -> str:
+    """Ensure a sub-collection artifact exists for a capability kind.
+
+    Returns the sub-collection's deterministic ID.
+    """
+    col_id = _deterministic_id(server_root_id, "collection", kind)
+    existing = db_get_artifact(db, col_id)
+    if existing is not None:
+        return col_id
+
+    now = datetime.now(timezone.utc).isoformat()
+    col_artifact = ArtifactEntity(
+        id=col_id,
+        root_id=col_id,
+        collection_id=server_root_id,
+        state=ArtifactEntity.STATE_COMMITTED,
+        context=json.dumps({"content_type": COLLECTION_CONTENT_TYPE}, separators=(",", ":")),
+        content="",
+        content_type=COLLECTION_CONTENT_TYPE,
+        name=label,
+        created_by=user_id,
+        created_time=now,
+    )
+    db_create_artifact(db, col_artifact)
+    db_add_artifact_to_collection(
+        db, server_root_id, col_id,
+        origin=True, propagate=["read", "invoke"],
+    )
+    return col_id
+
+
+def _archive_stale_capabilities(
+    db: StandardDatabase,
+    parent_id: str,
+    live_ids: Set[str],
+    user_id: str,
+) -> int:
+    """Archive capability artifacts that are no longer advertised.
+
+    Iterates the children of *parent_id* and archives any whose ID is
+    not in *live_ids*.  Returns the count of archived artifacts.
+    """
+    count = 0
+    for art_dict in _db_list_collection_artifacts(db, parent_id):
+        art_id = art_dict.get("id") or art_dict.get("_key")
+        if not art_id or art_id in live_ids:
+            continue
+        art = ArtifactEntity.from_dict(art_dict)
+        if art.state == ArtifactEntity.STATE_ARCHIVED:
+            continue
+        art.state = ArtifactEntity.STATE_ARCHIVED
+        art.modified_by = user_id
+        art.modified_time = datetime.now(timezone.utc).isoformat()
+        db_update_artifact(db, art)
+        count += 1
+    return count
+
+
+def _materialize_kind(
+    db: StandardDatabase,
+    server_root_id: str,
+    kind: str,
+    items: list,
+    build_context,
+    name_getter,
+    user_id: str,
+) -> int:
+    """Materialize one capability kind (tools, resources, or prompts).
+
+    Creates the sub-collection, upserts each item as an artifact, and
+    archives items no longer advertised.  Returns the count of items.
+    """
+    if not items:
+        return 0
+
+    label_map = {"tool": "Tools", "resource": "Resources", "prompt": "Prompts"}
+    subcol_id = _ensure_subcollection(
+        db, server_root_id, kind, label_map.get(kind, kind.title()), user_id,
+    )
+    content_type = _KIND_MAP[kind]
+    live_ids: Set[str] = set()
+
+    for item in items:
+        name = name_getter(item)
+        art_id = _deterministic_id(server_root_id, kind, name)
+        live_ids.add(art_id)
+        ctx = build_context(item)
+        content = ctx.get("description", name)
+
+        _upsert_capability_artifact(
+            db,
+            artifact_id=art_id,
+            collection_id=subcol_id,
+            content_type=content_type,
+            context=ctx,
+            content=content,
+            user_id=user_id,
+        )
+        # Ensure edge from subcollection
+        db_add_artifact_to_collection(
+            db, subcol_id, art_id,
+            origin=True, propagate=["read", "invoke"],
+        )
+
+    _archive_stale_capabilities(db, subcol_id, live_ids, user_id)
+    return len(items)
+
+
+def _fetch_capabilities(
+    db: StandardDatabase,
+    user_id: str,
+    server_root_id: str,
+) -> Optional[MCPServerInfo]:
+    """Connect to an MCP server and fetch its capability listings.
+
+    Returns the MCPServerInfo on success, or None if the server is
+    unreachable or produces an error.
+    """
+    try:
+        config = _get_server_config(db, user_id, None, server_root_id)
+    except ValueError:
+        logger.warning("materialize: server '%s' not resolvable", server_root_id)
+        return None
+
+    if config is None:
+        # agience-core — skip materialization for the built-in
+        return None
+
+    try:
+        auth_headers = _resolve_auth_headers(db, user_id, config)
+        if auth_headers:
+            config.runtime_headers = auth_headers
+    except AuthExpiredError:
+        logger.warning("materialize: auth expired for server '%s'", server_root_id)
+        return None
+
+    try:
+        info = fetch_server_info(config)
+        if info.status != "ok":
+            logger.warning("materialize: server '%s' returned status '%s'", server_root_id, info.status)
+            return None
+        return info
+    except Exception:
+        logger.exception("materialize: failed to connect to server '%s'", server_root_id)
+        return None
+
+
+def materialize_server_capabilities(
+    db: StandardDatabase,
+    server_root_id: str,
+    user_id: str,
+) -> Dict[str, int]:
+    """Materialize MCP server capabilities as child artifacts.
+
+    Calls tools/list, resources/list, prompts/list on the server, then
+    creates or updates artifacts for each capability.  Uses deterministic
+    UUIDs for idempotent sync.
+
+    Returns counts: ``{"tools": N, "resources": N, "prompts": N}``.
+    """
+    info = _fetch_capabilities(db, user_id, server_root_id)
+    if info is None:
+        return {"tools": 0, "resources": 0, "prompts": 0}
+
+    tools_count = _materialize_kind(
+        db, server_root_id, "tool", info.tools,
+        _build_tool_context, lambda t: t.name, user_id,
+    )
+    resources_count = _materialize_kind(
+        db, server_root_id, "resource", info.resources,
+        _build_resource_context, lambda r: r.uri or r.id, user_id,
+    )
+    prompts_count = _materialize_kind(
+        db, server_root_id, "prompt", info.prompts,
+        _build_prompt_context, lambda p: p.name, user_id,
+    )
+
+    logger.info(
+        "Materialized capabilities for server %s: %d tools, %d resources, %d prompts",
+        server_root_id, tools_count, resources_count, prompts_count,
+    )
+    return {"tools": tools_count, "resources": resources_count, "prompts": prompts_count}
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -396,11 +718,12 @@ def list_servers_for_workspace(db: StandardDatabase, user_id: str, workspace_id:
     servers: List[MCPServerInfo] = []
 
     # agience-core is always available (built-in, no artifact required)
+    core_id = _agience_core_id()
     try:
         client = create_agience_core_client(db, db, user_id)
         try:
             servers.append(MCPServerInfo(
-                server="agience-core",
+                server=core_id,
                 name="Agience Core",
                 tools=client.list_tools(),
                 resources=client.list_resources(),
@@ -411,7 +734,7 @@ def list_servers_for_workspace(db: StandardDatabase, user_id: str, workspace_id:
             client.close()
     except Exception as e:
         servers.append(MCPServerInfo(
-            server="agience-core",
+            server=core_id,
             name="Agience Core",
             status="error",
             message=f"Failed to load Agience Core: {e}",
@@ -419,8 +742,9 @@ def list_servers_for_workspace(db: StandardDatabase, user_id: str, workspace_id:
 
     desktop_host = desktop_host_relay_service.get_desktop_host_server_info(user_id)
     if desktop_host is not None:
+        session_id = str(desktop_host.get("session_id") or "")
         servers.append(MCPServerInfo(
-            server="desktop-host",
+            server=session_id,
             name=desktop_host.get("display_name") or desktop_host.get("device_id") or "Desktop Host",
             tools=desktop_host_relay_service.get_desktop_host_tools(),
             status="ok",
@@ -429,8 +753,10 @@ def list_servers_for_workspace(db: StandardDatabase, user_id: str, workspace_id:
         servers.extend(desktop_host_relay_service.get_local_mcp_server_infos(user_id))
 
     # External servers  -- read from mcp-server artifacts in the workspace
-    ws = arango_db_module.get_collection_by_id(db, workspace_id)
-    if not ws or ws.created_by != user_id:
+    ws_grants = arango_db_module.get_active_grants_for_principal_resource(
+        db, grantee_id=user_id, resource_id=workspace_id,
+    )
+    if not any(getattr(g, "can_read", False) for g in ws_grants):
         return servers
 
     from entities.artifact import Artifact
@@ -468,11 +794,12 @@ def list_all_servers_for_user(db: StandardDatabase, user_id: str) -> List[MCPSer
     servers: List[MCPServerInfo] = []
 
     # agience-core built-in
+    core_id = _agience_core_id()
     try:
         client = create_agience_core_client(db, db, user_id)
         try:
             servers.append(MCPServerInfo(
-                server="agience-core",
+                server=core_id,
                 name="Agience Core",
                 tools=client.list_tools(),
                 resources=client.list_resources(),
@@ -483,7 +810,7 @@ def list_all_servers_for_user(db: StandardDatabase, user_id: str) -> List[MCPSer
             client.close()
     except Exception as e:
         servers.append(MCPServerInfo(
-            server="agience-core",
+            server=core_id,
             name="Agience Core",
             status="error",
             message=f"Failed to load Agience Core: {e}",
@@ -492,8 +819,9 @@ def list_all_servers_for_user(db: StandardDatabase, user_id: str) -> List[MCPSer
     # Desktop host
     desktop_host = desktop_host_relay_service.get_desktop_host_server_info(user_id)
     if desktop_host is not None:
+        session_id = str(desktop_host.get("session_id") or "")
         servers.append(MCPServerInfo(
-            server="desktop-host",
+            server=session_id,
             name=desktop_host.get("display_name") or desktop_host.get("device_id") or "Desktop Host",
             tools=desktop_host_relay_service.get_desktop_host_tools(),
             status="ok",
@@ -508,7 +836,10 @@ def list_all_servers_for_user(db: StandardDatabase, user_id: str) -> List[MCPSer
             info = fetch_server_info(config)
             servers.append(info)
         except Exception as e:
-            server_id = server_registry.get_id(entry.name) or entry.name
+            server_id = server_registry.get_id(entry.name)
+            if not server_id:
+                logger.error("Persona server '%s' has no bootstrap UUID — skipping", entry.name)
+                continue
             servers.append(MCPServerInfo(server=server_id, name=entry.title, status="error", message=str(e)))
 
     # Collection-committed servers
@@ -533,12 +864,14 @@ def import_resources_as_artifacts(
 ) -> List[str]:
     """Create workspace artifacts for selected MCP resources.
 
-    ``server_artifact_id`` is the artifact ID of an mcp-server artifact (or ``"agience-core"``).
+    ``server_artifact_id`` is the bootstrap UUID or artifact UUID of an MCP server.
     Returns list of created artifact IDs.
     """
 
-    ws = arango_db_module.get_collection_by_id(db, workspace_id)
-    if not ws or ws.created_by != user_id:
+    ws_grants = arango_db_module.get_active_grants_for_principal_resource(
+        db, grantee_id=user_id, resource_id=workspace_id,
+    )
+    if not any(getattr(g, "can_create", False) for g in ws_grants):
         raise ValueError("Workspace not found")
 
     from services.workspace_service import create_workspace_artifacts_bulk
@@ -643,6 +976,26 @@ def dispatch_resources_import(artifact: Dict, body: Dict, ctx) -> Dict:
     return {"created_artifact_ids": created_ids, "count": len(created_ids)}
 
 
+def dispatch_materialize_capabilities(artifact: Dict, body: Dict, ctx) -> Dict:
+    """Native dispatcher target for `operations.materialize_capabilities`.
+
+    Connects to the MCP server represented by *artifact*, queries its
+    tools/resources/prompts, and materializes each as a child artifact
+    with deterministic IDs.  Idempotent — safe to call repeatedly.
+
+    Returns counts: ``{"tools": N, "resources": N, "prompts": N}``.
+    """
+    server_artifact_id = artifact.get("root_id") or artifact.get("_key") or artifact.get("id")
+    if not server_artifact_id:
+        raise ValueError("Cannot resolve server artifact id from dispatch target")
+
+    return materialize_server_capabilities(
+        db=ctx.arango_db,
+        server_root_id=str(server_artifact_id),
+        user_id=ctx.user_id,
+    )
+
+
 def invoke_tool(
     db: StandardDatabase,
     user_id: str,
@@ -655,7 +1008,7 @@ def invoke_tool(
 
     Routes based on Identity + Server + Host:
       - Identity: *user_id* (from JWT/API key)
-      - Server: *server_artifact_id* -- server name, bootstrap UUID, or artifact UUID
+      - Server: *server_artifact_id* -- bootstrap UUID or artifact UUID
       - Host: resolved from server config (local, HTTP, desktop relay)
 
     For built-in persona servers a delegation JWT is issued (RFC 8693 style:
@@ -667,14 +1020,14 @@ def invoke_tool(
     """
     from mcp_client.adapter import create_client
 
-    if server_artifact_id == "agience-core":
+    if server_artifact_id == _agience_core_id():
         client = create_agience_core_client(db, db, user_id)
         try:
             return client.call_tool(tool_name, arguments)
         finally:
             client.close()
 
-    if server_artifact_id == "desktop-host" or server_artifact_id.startswith("local-mcp:"):
+    if _is_desktop_relay(server_artifact_id, user_id):
         return desktop_host_relay_service.relay_manager.invoke_tool_for_user_sync(
             user_id=user_id,
             workspace_id=workspace_id,
@@ -683,13 +1036,12 @@ def invoke_tool(
             arguments=arguments,
         )
 
-    # Check manifest-registered builtins — accepts name or bootstrap UUID.
-    builtin_entry = server_registry.get_entry(server_artifact_id)
-    if builtin_entry is None:
+    # Check manifest-registered builtins — by bootstrap UUID only.
+    if server_registry.is_builtin_id(server_artifact_id):
         name = server_registry.get_name_by_id(server_artifact_id)
-        if name is not None:
-            builtin_entry = server_registry.get_entry(name)
-    if builtin_entry is not None:
+        builtin_entry = server_registry.get_entry(name) if name else None
+        if builtin_entry is None:
+            raise ValueError(f"Builtin server with UUID '{server_artifact_id}' has no registry entry")
         builtin_config = server_registry.build_http_config(builtin_entry.name)
         if user_id:
             delegation = auth_service.issue_delegation_token(builtin_entry.client_id, user_id)
@@ -742,7 +1094,7 @@ def read_resource(
     """
     from mcp_client.adapter import create_client
 
-    if server_artifact_id == "agience-core":
+    if server_artifact_id == _agience_core_id():
         client = create_agience_core_client(db, db, user_id)
         try:
             return client.read_resource(uri)

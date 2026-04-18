@@ -1,0 +1,259 @@
+{
+  "content_type": "application/vnd.agience.package+json",
+  "version": 1,
+  "inherits": ["application/json"],
+  "description": "Agience package manifest \u2014 a shareable bundle of artifacts, MCP server dependencies, and wiring. Installed via invoke_artifact(package_id, op=\"install\") which copies contents into a target workspace and registers any missing MCP server dependencies. Published by committing the package artifact to a registry collection.",
+  "context_schema": {
+    "package": {
+      "type": "object",
+      "description": "Package manifest.",
+      "required": ["id", "version"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable package slug (kebab-case, unique per publisher)."
+        },
+        "version": {
+          "type": "string",
+          "description": "Semver. New version = new package artifact, not a mutation."
+        },
+        "description": {"type": "string"},
+        "publisher": {
+          "type": "object",
+          "properties": {
+            "person_id": {"type": "string"},
+            "name": {"type": "string"},
+            "org": {"type": "string"}
+          }
+        },
+        "contents": {
+          "type": "array",
+          "description": "Artifact references that make up the package payload.",
+          "items": {
+            "type": "object",
+            "required": ["artifact_ref", "role"],
+            "properties": {
+              "artifact_ref": {
+                "type": "string",
+                "description": "Stable package-scoped reference. Format: agience://packages/{package_id}/{role}/{slug}. Resolved to a concrete artifact_id at install time."
+              },
+              "artifact_id": {
+                "type": "string",
+                "description": "Concrete artifact ID in the publisher's workspace/collection. Set at export time. Install uses this to fetch the source; the package-scoped artifact_ref is what downstream references are rewritten to."
+              },
+              "role": {
+                "type": "string",
+                "description": "Role within the package. Common: transform, prompt, docs, example, state, tool-binding."
+              },
+              "content_type": {"type": "string"},
+              "slug": {"type": "string"}
+            }
+          }
+        },
+        "dependencies": {
+          "type": "object",
+          "properties": {
+            "servers": {
+              "type": "array",
+              "description": "MCP servers the package's transforms reference.",
+              "items": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                  "name": {"type": "string"},
+                  "transport": {
+                    "type": "string",
+                    "enum": ["http", "stdio", "builtin"]
+                  },
+                  "endpoint": {"type": "string"},
+                  "repo_url": {"type": "string"},
+                  "required": {
+                    "type": "boolean",
+                    "description": "If false, install proceeds even when the server is unavailable."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "compatibility": {
+          "type": "object",
+          "properties": {
+            "mcp": {
+              "type": "string",
+              "description": "Semver range of MCP protocol this package is known to work with."
+            },
+            "agience": {
+              "type": "string",
+              "description": "Semver range of the Agience platform."
+            }
+          }
+        },
+        "install": {
+          "type": "object",
+          "properties": {
+            "linking": {
+              "type": "array",
+              "description": "Rewrite rules applied to freshly-imported artifacts so package-scoped refs resolve to local IDs in the target workspace.",
+              "items": {
+                "type": "object",
+                "required": ["from_ref", "to_ref"],
+                "properties": {
+                  "from_ref": {"type": "string"},
+                  "to_ref": {"type": "string"},
+                  "rewrite": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "path": {"type": "string"},
+                        "value": {"type": "string"}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "trust": {
+          "type": "object",
+          "properties": {
+            "tier": {
+              "type": "string",
+              "enum": ["unverified", "self-signed", "team-verified", "org-verified", "marketplace-reviewed"]
+            },
+            "signed_by": {"type": "string"},
+            "signature": {"type": "string"}
+          }
+        },
+        "billing": {
+          "type": "object",
+          "properties": {
+            "settlement_mode": {
+              "type": "string",
+              "enum": ["free", "usage_based", "fixed"]
+            },
+            "price_per_run": {"type": "number"},
+            "currency": {"type": "string"},
+            "revenue_split": {
+              "type": "object",
+              "description": "Fractional splits that sum to <= 1.0. Remainder is platform fee."
+            }
+          }
+        },
+        "capabilities": {
+          "type": "array",
+          "description": "Machine-readable capability descriptors for agent-driven discovery.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {"type": "string"},
+              "description": {"type": "string"},
+              "input_schema": {"type": "object"},
+              "output_schema": {"type": "object"},
+              "domains": {"type": "array", "items": {"type": "string"}}
+            }
+          }
+        }
+      }
+    }
+  },
+  "operations": {
+    "create": {
+      "enabled": true,
+      "requires_grant": "create",
+      "dispatch": { "kind": "artifact_crud" },
+      "emits": [
+        { "event": "artifact.created", "phase": "after" }
+      ]
+    },
+    "read": {
+      "enabled": true,
+      "requires_grant": "read",
+      "dispatch": { "kind": "artifact_crud" }
+    },
+    "update": {
+      "enabled": true,
+      "requires_grant": "update",
+      "dispatch": { "kind": "artifact_crud" },
+      "emits": [
+        { "event": "artifact.updated", "phase": "after" }
+      ]
+    },
+    "delete": {
+      "enabled": true,
+      "requires_grant": "delete",
+      "dispatch": { "kind": "artifact_crud" },
+      "emits": [
+        { "event": "artifact.deleted", "phase": "after" }
+      ]
+    },
+    "invoke": {
+      "enabled": true,
+      "requires_grant": "invoke",
+      "dispatch": {
+        "kind": "mcp_tool",
+        "server_ref": "verso",
+        "tool_ref": "install_package"
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "target_workspace_id": {
+            "type": "string",
+            "description": "Workspace to install into. Defaults to the caller's active workspace if omitted."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "Return the install plan without creating artifacts."
+          }
+        }
+      },
+      "emits": [
+        { "event": "package.install.started",   "phase": "before" },
+        { "event": "package.install.completed", "phase": "after"  },
+        { "event": "package.install.failed",    "phase": "error"  }
+      ]
+    },
+    "export": {
+      "enabled": true,
+      "requires_grant": "update",
+      "dispatch": {
+        "kind": "mcp_tool",
+        "server_ref": "verso",
+        "tool_ref": "export_package"
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "description": "Workspace whose artifacts to collect into the package."
+          },
+          "artifact_ids": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Optional subset. Omit to include all non-archived artifacts in the workspace."
+          }
+        }
+      },
+      "emits": [
+        { "event": "package.export.completed", "phase": "after" }
+      ]
+    }
+  },
+  "ui": {
+    "label": "Package",
+    "icon": "package",
+    "color": "#ea580c",
+    "badge_class": "bg-orange-100 text-orange-800",
+    "modes": ["floating", "preview"],
+    "states": ["view", "edit"],
+    "default_mode": "preview",
+    "default_state": "view",
+    "is_container": false,
+    "creatable": true,
+    "viewer": null
+  }
+}

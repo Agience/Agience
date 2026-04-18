@@ -60,7 +60,6 @@ _OPERATOR_TO_SERVER: Dict[str, tuple[str, str]] = {
     "ingest_runner":               ("astra", "ingest_text"),
     "extract_units":               ("aria",  "extract_units"),
     "provenance":                  ("aria",  "attach_provenance"),
-    "transform_executor":          ("verso", "execute_transform"),
     # Colon-namespaced names used by inter-server calls
     "verso:invoke_llm":            ("verso", "invoke_llm"),
     "ophan:check_llm_allowance":   ("ophan", "check_llm_allowance"),
@@ -339,18 +338,23 @@ def _invoke_transform(
         logger.warning("Transform %s has unsupported run.type '%s'", transform_artifact_id, run_type)
         return
 
-    server = run.get("server_artifact_id") or run.get("server") or "agience-core"
+    # Resolve server via relationship edge (canonical), falling back to
+    # context fields only for pre-migration artifacts.
+    from db.arango import get_relationship_target
+    server = get_relationship_target(db, transform_artifact_id, "server")
+    if not server:
+        # Legacy fallback — pre-migration artifacts may still carry
+        # server_artifact_id or server in context.  Remove once all
+        # transforms are migrated to edge-based relationships.
+        server = run.get("server_artifact_id")
+    if not server:
+        logger.error("Transform %s has no server relationship edge", transform_artifact_id)
+        return
+
     tool_name = (run.get("tool") or "").strip()
     if not tool_name:
         logger.warning("Transform %s has no tool configured", transform_artifact_id)
         return
-    if not isinstance(server, str) or not server.strip():
-        logger.warning("Transform %s has no server configured", transform_artifact_id)
-        return
-
-    # Resolve builtin server names to seeded server artifact UUIDs.
-    if server not in ("agience-core", "desktop-host") and not server.startswith("local-mcp:"):
-        server = server_registry.resolve_name_to_id(server)
 
     try:
         mcp_service.invoke_tool(

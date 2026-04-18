@@ -136,6 +136,9 @@ mcp = FastMCP(
     ),
 )
 
+from artifact_helpers import register_types_manifest
+register_types_manifest(mcp, "atlas", __file__)
+
 
 # ---------------------------------------------------------------------------
 # Tool: check_provenance
@@ -147,19 +150,11 @@ async def check_provenance(artifact_id: str) -> str:
     Args:
         artifact_id: Card to trace. Works for both workspace cards and committed versions.
     """
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{AGIENCE_API_URI}/agents/invoke",
-            headers=await _headers(),
-            json={
-                "agent": "provenance:check",
-                "cards": [artifact_id],
-            },
-            timeout=30,
-        )
-    if resp.status_code >= 400:
-        return f"Error: {resp.status_code} � {resp.text[:300]}"
-    return json.dumps(resp.json(), indent=2)
+    # TODO(agents-invoke-removal): "provenance:check" is a legacy agent plugin that
+    # does not exist in backend/agents/ and has no entry in _OPERATOR_TO_SERVER.
+    # This tool has no working implementation path; leaving for manual design review.
+    _ = artifact_id  # unused — kept for stable tool signature
+    return json.dumps({"error": "check_provenance is not yet implemented"})
 
 
 # ---------------------------------------------------------------------------
@@ -178,23 +173,12 @@ async def detect_conflicts(
         collection_id: Scope to a specific committed collection.
         focus_artifact_id: Narrow conflict detection to claims in this card.
     """
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{AGIENCE_API_URI}/agents/invoke",
-            headers=await _headers(),
-            json={
-                "agent": "provenance:detect_conflicts",
-                "workspace_id": workspace_id,
-                "params": {
-                    "collection_id": collection_id,
-                    "focus_artifact_id": focus_artifact_id,
-                },
-            },
-            timeout=60,
-        )
-    if resp.status_code >= 400:
-        return f"Error: {resp.status_code} � {resp.text[:300]}"
-    return json.dumps(resp.json(), indent=2)
+    # TODO(agents-invoke-removal): "provenance:detect_conflicts" is a legacy
+    # agent plugin that does not exist in backend/agents/ and has no entry in
+    # _OPERATOR_TO_SERVER. This tool has no working implementation path; leaving
+    # for manual design review.
+    _ = (workspace_id, collection_id, focus_artifact_id)  # unused — kept for stable tool signature
+    return json.dumps({"error": "detect_conflicts is not yet implemented"})
 
 
 # ---------------------------------------------------------------------------
@@ -217,21 +201,12 @@ async def apply_contract(
         workspace_id: Workspace to validate.
         contract_artifact_id: ID of the contract card defining the rules.
     """
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{AGIENCE_API_URI}/agents/invoke",
-            headers=await _headers(),
-            json={
-                "agent": "contracts:apply",
-                "workspace_id": workspace_id,
-                "cards": [contract_artifact_id],
-                "params": {"contract_artifact_id": contract_artifact_id},
-            },
-            timeout=60,
-        )
-    if resp.status_code >= 400:
-        return f"Error: {resp.status_code} � {resp.text[:300]}"
-    return json.dumps(resp.json(), indent=2)
+    # TODO(agents-invoke-removal): "contracts:apply" is a legacy agent plugin
+    # that does not exist in backend/agents/ and has no entry in
+    # _OPERATOR_TO_SERVER. This tool has no working implementation path;
+    # leaving for manual design review.
+    _ = (workspace_id, contract_artifact_id)  # unused — kept for stable tool signature
+    return json.dumps({"error": "apply_contract is not yet implemented"})
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +240,36 @@ async def check_coherence(
 ) -> str:
     """Check for logical inconsistencies, contradictions, or gaps across the given cards."""
     return "TODO: check_coherence not yet implemented."
+
+
+# ---------------------------------------------------------------------------
+# Resources: HTML Views
+# ---------------------------------------------------------------------------
+
+import pathlib as _pathlib
+
+def _read_view(content_type_dir: str) -> str:
+    """Read a view.html from the atlas ui directory."""
+    view_path = _pathlib.Path(__file__).parent / "ui" / "application" / content_type_dir / "view.html"
+    return view_path.read_text(encoding="utf-8")
+
+
+@mcp.resource("ui://atlas/vnd.agience.workspace.html")
+async def workspace_viewer_html() -> str:
+    """Serve the viewer HTML for vnd.agience.workspace+json (bindings editor)."""
+    return _read_view("vnd.agience.workspace+json")
+
+
+@mcp.resource("ui://atlas/vnd.agience.history.html")
+async def history_viewer_html() -> str:
+    """Serve the viewer HTML for vnd.agience.history+json."""
+    return _read_view("vnd.agience.history+json")
+
+
+@mcp.resource("ui://atlas/vnd.agience.provenance.html")
+async def provenance_viewer_html() -> str:
+    """Serve the viewer HTML for vnd.agience.provenance+json."""
+    return _read_view("vnd.agience.provenance+json")
 
 
 

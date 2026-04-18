@@ -1,0 +1,15 @@
+# agience-home — Caddy image for home.agience.ai
+#
+# The TLS cert is fetched from CDN at container startup by the entrypoint
+# script. Cert renewals take effect on the next `docker compose up`.
+#
+# Published as: agience/agience-home:<tag> (Docker Hub)
+#               ghcr.io/agience/agience-home:<tag> (GHCR)
+
+FROM caddy:alpine
+
+COPY packaging/install/home/Caddyfile /etc/caddy/Caddyfile
+COPY packaging/install/home/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

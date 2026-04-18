@@ -86,7 +86,6 @@ def _is_user_platform_admin(arango_db: StandardDatabase, user_id: str) -> bool:
         grants = db_get_active_grants(
             arango_db,
             grantee_id=user_id,
-            resource_type="collection",
             resource_id=get_id(AUTHORITY_COLLECTION_SLUG),
         )
         return any(g.can_update and g.is_active() for g in grants)

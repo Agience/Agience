@@ -179,9 +179,9 @@ Match existing patterns exactly. Do not introduce new abstractions for one-time 
 
 **Backend (Python / FastAPI)**
 - Routers delegate to `api/` sub-modules → services → repositories. Never call the database directly from a router.
-- Entity serialization: use `to_dict_workspace()` for Postgres context, `to_dict_collection()` for ArangoDB context. Never mix them.
-- Artifact references are always a single `card_id` (pending rename to `artifact_id`) string. Never add `workspace_id` or `label` to a reference array.
-- Agent invocation goes through `POST /agents/invoke`. Do not add new invoke mechanisms.
+- Entity serialization: use the unified `to_dict()` method on all entities. `Collection` is an alias for `Artifact`. Never use legacy `to_dict_workspace()` or `to_dict_collection()`.
+- Artifact references are always a single `artifact_id` string. Never add `workspace_id` or `label` to a reference array.
+- Agent invocation goes through `POST /artifacts/{id}/invoke`. Do not add new invoke mechanisms or dedicated agent/server endpoints.
 - Use `ruff check .` (from `backend/`) before committing.
 
 **Frontend (React / TypeScript)**
@@ -207,7 +207,7 @@ Match existing patterns exactly. Do not introduce new abstractions for one-time 
 - Bug fixes must include a failing test that reproduces the bug.
 - New endpoints require a router test in `backend/tests/test_router_*.py`.
 - Non-trivial service logic requires a unit test with mocked dependencies.
-- Never hit real Postgres, ArangoDB, OpenSearch, or S3 in tests.
+- Never hit real ArangoDB, OpenSearch, or S3 in tests.
 - Frontend behavior changes require a Vitest + RTL test.
 
 Run the test suite:

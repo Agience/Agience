@@ -232,7 +232,12 @@ def build_http_config(name: str):
     from mcp_client.contracts import MCPServerConfig, MCPServerTransport
 
     base_uri = _derive_servers_host_uri()
-    server_id = _ID_BY_NAME.get(entry.name) or entry.name
+    server_id = _ID_BY_NAME.get(entry.name)
+    if server_id is None:
+        raise ValueError(
+            f"Server '{name}' UUID not populated. "
+            "Ensure bootstrap has completed before calling this function."
+        )
     return MCPServerConfig(
         id=server_id,
         label=entry.title,

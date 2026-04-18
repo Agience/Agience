@@ -97,7 +97,6 @@ def ensure_platform_resources(arango_db: StandardDatabase) -> Optional[str]:
             arango_db,
             collection_id=collection_id,
             root_id=root_id,
-            slug=artifact_slug,
             context=_build_platform_agent_context(agent),
             content=_build_platform_agent_content(agent),
             content_type=AGENT_CONTENT_TYPE,
@@ -109,7 +108,6 @@ def ensure_platform_resources(arango_db: StandardDatabase) -> Optional[str]:
         arango_db,
         collection_id=collection_id,
         root_id=agency_root_id,
-        slug=AGENCY_ARTIFACT_SLUG,
         context=_build_platform_agency_context(agent_root_ids),
         content=_build_platform_agency_content(),
         content_type=AGENCY_CONTENT_TYPE,
@@ -163,7 +161,6 @@ def _ensure_resources_collection(arango_db: StandardDatabase) -> Optional[str]:
             created_by=AGIENCE_PLATFORM_USER_ID,
             content_type=COLLECTION_CONTENT_TYPE,
             state=CollectionEntity.STATE_COMMITTED,
-            slug=RESOURCES_COLLECTION_SLUG,
             created_time=now,
             modified_time=now,
         )
@@ -180,7 +177,6 @@ def _ensure_artifact_linked(
     *,
     collection_id: str,
     root_id: str,
-    slug: str,
     context: str,
     content: str,
     content_type: Optional[str] = None,
@@ -219,7 +215,6 @@ def _ensure_artifact_linked(
             content_type=content_type,
             created_by=AGIENCE_PLATFORM_USER_ID,
             created_time=now,
-            slug=slug,
         )
         db_create_artifact(arango_db, artifact)
         db_add_artifact_to_collection(

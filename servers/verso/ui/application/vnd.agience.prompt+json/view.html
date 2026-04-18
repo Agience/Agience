@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Prompt Viewer</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 16px; color: #1e293b; background: #fff; }
+    .header { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+    .icon { width: 20px; height: 20px; color: #8b5cf6; }
+    h1 { font-size: 16px; font-weight: 600; }
+    .field { margin-bottom: 12px; }
+    .label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; margin-bottom: 4px; }
+    .value { font-size: 14px; color: #334155; }
+    .args-list { list-style: none; }
+    .arg { padding: 8px 12px; border: 1px solid #e2e8f0; border-radius: 6px; margin-bottom: 6px; }
+    .arg-name { font-weight: 600; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px; }
+    .arg-desc { font-size: 13px; color: #64748b; margin-top: 2px; }
+    .required { color: #dc2626; font-size: 11px; font-weight: 500; margin-left: 6px; }
+    .empty { color: #94a3b8; font-style: italic; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+    <h1 id="title">Prompt</h1>
+  </div>
+  <div class="field">
+    <div class="label">Description</div>
+    <div class="value" id="description"></div>
+  </div>
+  <div class="field">
+    <div class="label">Arguments</div>
+    <ul class="args-list" id="arguments"></ul>
+  </div>
+
+  <script>
+    function render(artifact) {
+      let ctx = {};
+      try { ctx = typeof artifact.context === 'string' ? JSON.parse(artifact.context) : (artifact.context || {}); } catch {}
+      document.getElementById('title').textContent = ctx.prompt_name || ctx.description || 'Prompt';
+      document.getElementById('description').textContent = ctx.description || '';
+      const argsList = document.getElementById('arguments');
+      argsList.innerHTML = '';
+      const args = ctx.arguments || [];
+      if (args.length === 0) {
+        argsList.innerHTML = '<li class="empty">No arguments</li>';
+        return;
+      }
+      for (const arg of args) {
+        const li = document.createElement('li');
+        li.className = 'arg';
+        li.innerHTML = '<span class="arg-name">' + (arg.name || '') + '</span>'
+          + (arg.required ? '<span class="required">required</span>' : '')
+          + (arg.description ? '<div class="arg-desc">' + arg.description + '</div>' : '');
+        argsList.appendChild(li);
+      }
+    }
+
+    window.addEventListener('message', (e) => {
+      if (e.data?.type === 'artifact' && e.data.artifact) render(e.data.artifact);
+    });
+    if (window.parent !== window) {
+      window.parent.postMessage({ type: 'viewer-ready' }, '*');
+    }
+  </script>
+</body>
+</html>

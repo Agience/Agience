@@ -39,9 +39,10 @@ UUID_REGEX = re.compile(
 # ---------------------------------------------------------------------------
 
 
+@patch("db.arango.upsert_user_collection_grant")
 @patch("services.collection_service.ensure_collection_descriptor")
 @patch("services.collection_service.db_create_collection")
-def test_personal_collection_id_equals_user_id(mock_create, _mock_descriptor):
+def test_personal_collection_id_equals_user_id(mock_create, _mock_descriptor, _mock_grant):
     """
     Design decision: personal collection ID is set to the user UUID.
     This is intentional -- both the collection and the user share the same UUID.
@@ -76,7 +77,8 @@ def test_inbox_workspace_id_equals_user_id():
     user_id = str(uuid.uuid4())
 
     with patch("services.workspace_service.arango.create_collection", return_value=None), \
-         patch("services.collection_service.ensure_collection_descriptor"):
+         patch("services.collection_service.ensure_collection_descriptor"), \
+         patch("services.workspace_service.arango.upsert_user_collection_grant"):
         result = create_workspace(
             db=mock_db,
             user_id=user_id,
@@ -139,7 +141,7 @@ def test_get_all_platform_collection_ids_returns_uuids():
 def test_authority_bootstrap_creates_collection_with_uuid_and_slug(
     _mock_get, _mock_linked, _mock_get_artifact, mock_create_col, mock_create_art, _mock_add, _mock_ensure_descriptor
 ):
-    """Authority collection should have a UUID _key and a slug field."""
+    """Authority collection and artifact should have UUID IDs and root_ids."""
     clear_registry()
     col_uuid = str(uuid.uuid4())
     art_uuid = str(uuid.uuid4())
@@ -151,16 +153,14 @@ def test_authority_bootstrap_creates_collection_with_uuid_and_slug(
     from services.authority_content_service import ensure_current_instance_authority
     ensure_current_instance_authority(MagicMock())
 
-    # Verify collection was created with UUID id and slug
+    # Verify collection was created with UUID id
     col_entity = mock_create_col.call_args[0][1]
     assert UUID_REGEX.match(col_entity.id), "Collection ID must be a UUID"
-    assert col_entity.slug == AUTHORITY_COLLECTION_SLUG
 
-    # Verify artifact was created with UUID id, UUID root_id, and slug
+    # Verify artifact was created with UUID id and UUID root_id
     art_entity = mock_create_art.call_args[0][1]
     assert UUID_REGEX.match(art_entity.id), "Artifact version ID must be a UUID"
     assert UUID_REGEX.match(art_entity.root_id), "Artifact root_id must be a UUID"
-    assert art_entity.slug == AUTHORITY_ARTIFACT_SLUG
 
 
 @patch("services.host_content_service.ensure_collection_descriptor")
@@ -173,7 +173,7 @@ def test_authority_bootstrap_creates_collection_with_uuid_and_slug(
 def test_host_bootstrap_creates_collection_with_uuid_and_slug(
     _mock_get, _mock_linked, _mock_get_artifact, mock_create_col, mock_create_art, _mock_add, _mock_ensure_descriptor
 ):
-    """Host collection should have a UUID _key and a slug field."""
+    """Host collection and artifact should have UUID IDs and root_ids."""
     clear_registry()
     register_id(HOST_COLLECTION_SLUG, str(uuid.uuid4()))
     register_id(HOST_ARTIFACT_SLUG, str(uuid.uuid4()))
@@ -185,9 +185,7 @@ def test_host_bootstrap_creates_collection_with_uuid_and_slug(
 
     col_entity = mock_create_col.call_args[0][1]
     assert UUID_REGEX.match(col_entity.id)
-    assert col_entity.slug == HOST_COLLECTION_SLUG
 
     art_entity = mock_create_art.call_args[0][1]
     assert UUID_REGEX.match(art_entity.id)
     assert UUID_REGEX.match(art_entity.root_id)
-    assert art_entity.slug == HOST_ARTIFACT_SLUG

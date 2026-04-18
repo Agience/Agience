@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Workspace Bindings</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    font-size: 14px; color: #1e293b; background: #fff; line-height: 1.5;
+  }
+  .container { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+
+  .header {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 4px;
+  }
+  .header h2 { font-size: 15px; font-weight: 600; color: #0f172a; }
+  .header .subtitle { font-size: 12px; color: #94a3b8; }
+
+  .slots-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+  }
+  @media (max-width: 500px) { .slots-grid { grid-template-columns: 1fr; } }
+
+  .slot {
+    border-radius: 10px; border: 2px dashed #e2e8f0;
+    background: #fafbfc; padding: 14px; min-height: 80px;
+    display: flex; flex-direction: column; gap: 6px;
+    transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+    position: relative; cursor: pointer;
+  }
+  .slot:hover { border-color: #cbd5e1; background: #f8fafc; }
+  .slot.drag-over { border-color: #818cf8; background: #eef2ff; box-shadow: 0 0 0 2px rgba(129,140,248,0.25); }
+  .slot.drag-invalid { border-color: #fca5a5; background: #fef2f2; }
+  .slot.bound { border-style: solid; border-color: #c7d2fe; background: #fff; }
+  .slot.bound:hover { border-color: #a5b4fc; }
+
+  .slot-label {
+    font-size: 10px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.06em; color: #94a3b8;
+  }
+  .slot-icon { font-size: 16px; }
+  .slot-empty {
+    font-size: 12px; color: #cbd5e1; font-style: italic;
+    margin-top: auto;
+  }
+
+  .slot-bound-name {
+    font-size: 13px; color: #1e293b; font-weight: 500;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .slot-bound-id {
+    font-size: 10px; color: #94a3b8; font-family: 'SF Mono','Fira Code',monospace;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  .slot-clear {
+    position: absolute; top: 8px; right: 8px;
+    width: 20px; height: 20px; border-radius: 50%;
+    border: 1px solid #e2e8f0; background: #fff;
+    color: #94a3b8; font-size: 12px; line-height: 18px; text-align: center;
+    cursor: pointer; display: none; transition: all 0.15s;
+  }
+  .slot-clear:hover { background: #fee2e2; color: #ef4444; border-color: #fca5a5; }
+  .slot.bound:hover .slot-clear { display: block; }
+
+  /* Multi-valued slot chip list */
+  .multi-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  .multi-chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: 6px; font-size: 11px;
+    background: #eff6ff; border: 1px solid #bfdbfe; color: #1d4ed8;
+  }
+  .multi-chip-x {
+    cursor: pointer; color: #93c5fd; font-size: 13px; line-height: 1;
+  }
+  .multi-chip-x:hover { color: #ef4444; }
+
+  .slot-add-btn {
+    margin-top: 4px; font-size: 11px; color: #818cf8;
+    cursor: pointer; background: none; border: none;
+    padding: 0; font-weight: 500;
+  }
+  .slot-add-btn:hover { color: #6366f1; text-decoration: underline; }
+
+  .empty-state {
+    font-size: 13px; color: #94a3b8; font-style: italic;
+    text-align: center; padding: 32px 0;
+  }
+  .error-msg {
+    font-size: 12px; color: #ef4444; margin-top: 4px;
+  }
+</style>
+</head>
+<body>
+<div class="container" id="app">
+  <div style="color:#94a3b8;font-size:13px;">Loading...</div>
+</div>
+
+<script>
+/* ===== MCP Apps postMessage protocol ===== */
+let _nextId = 1;
+const _pending = {};
+
+function sendRpc(method, params) {
+  return new Promise((resolve, reject) => {
+    const id = _nextId++;
+    _pending[id] = { resolve, reject };
+    window.parent.postMessage({ jsonrpc: '2.0', id, method, params }, '*');
+  });
+}
+
+function sendNotification(method, params) {
+  window.parent.postMessage({ jsonrpc: '2.0', method, params }, '*');
+}
+
+window.addEventListener('message', (e) => {
+  if (!e.data || e.data.jsonrpc !== '2.0') return;
+
+  // RPC response
+  if (typeof e.data.id === 'number' && _pending[e.data.id]) {
+    const { resolve, reject } = _pending[e.data.id];
+    delete _pending[e.data.id];
+    if (e.data.error) reject(new Error(e.data.error.message));
+    else resolve(e.data.result);
+    return;
+  }
+
+  // Notifications from host
+  if (e.data.method === 'ui/notifications/tool-result') {
+    handleToolResult(e.data.params);
+  }
+  if (e.data.method === 'ui/notifications/picker-result') {
+    handlePickerResult(e.data.params);
+  }
+  if (e.data.method === 'ui/notifications/drag-enter' ||
+      e.data.method === 'ui/notifications/drag-over') {
+    handleDragOver(e.data.params);
+  }
+  if (e.data.method === 'ui/notifications/drag-leave') {
+    handleDragLeave(e.data.params);
+  }
+  if (e.data.method === 'ui/notifications/drag-drop') {
+    handleDrop(e.data.params);
+  }
+});
+
+/* ===== Role definitions ===== */
+const ROLES = [
+  { key: 'memory',              label: 'Memory',              icon: '🧠', multi: false, hint: 'Collection for persistent memory' },
+  { key: 'tools',               label: 'Tools',               icon: '🔧', multi: false, hint: 'Collection of MCP servers' },
+  { key: 'resources',           label: 'Resources',           icon: '📂', multi: false, hint: 'Collection of context artifacts' },
+  { key: 'ask_prompt',          label: 'Ask Prompt',          icon: '💬', multi: false, hint: 'Prompt artifact for the ask tool' },
+  { key: 'engagement_channels', label: 'Channels',            icon: '📡', multi: false, hint: 'Channel adapters for engagement' },
+  { key: 'target_collections',  label: 'Target Collections',  icon: '🎯', multi: true,  hint: 'Collections new artifacts link to' },
+];
+
+let _artifactData = null;
+let _bindings = {};
+let _artifactId = null;
+let _errorMsg = '';
+let _activeDragSlot = null;
+
+/* ===== Initialization ===== */
+sendRpc('ui/initialize', {}).then(() => {
+  sendNotification('ui/notifications/initialized', {});
+});
+
+function handleToolResult(params) {
+  if (!params || !params.content) return;
+  for (const item of params.content) {
+    if (item.type === 'text' && item.text) {
+      try {
+        const data = JSON.parse(item.text);
+        _artifactData = data;
+        _artifactId = data.artifact_id;
+        _bindings = (data.context && data.context.bindings) || {};
+        render();
+      } catch (e) {
+        console.error('[Workspace Viewer] Parse error', e);
+      }
+    }
+  }
+}
+
+/* ===== Render ===== */
+function render() {
+  const app = document.getElementById('app');
+  if (!_artifactData) {
+    app.innerHTML = '<div class="empty-state">No workspace data loaded.</div>';
+    return;
+  }
+
+  let html = '';
+  html += '<div class="header">';
+  html += '<h2>Workspace Bindings</h2>';
+  html += '<span class="subtitle">Drag artifacts onto slots or click to pick</span>';
+  html += '</div>';
+
+  html += '<div class="slots-grid">';
+  for (const role of ROLES) {
+    html += renderSlot(role);
+  }
+  html += '</div>';
+
+  if (_errorMsg) {
+    html += '<div class="error-msg">' + escapeHtml(_errorMsg) + '</div>';
+  }
+
+  app.innerHTML = html;
+  attachSlotListeners();
+
+  // Report size
+  sendNotification('ui/notifications/size-changed', {
+    height: document.documentElement.scrollHeight,
+  });
+}
+
+function renderSlot(role) {
+  const binding = _bindings[role.key];
+  const isBound = role.multi
+    ? (binding && Array.isArray(binding.artifact_ids) && binding.artifact_ids.length > 0)
+    : (binding && binding.artifact_id);
+
+  let cls = 'slot';
+  if (isBound) cls += ' bound';
+
+  let inner = '';
+  inner += '<div class="slot-label">' + role.icon + ' ' + escapeHtml(role.label) + '</div>';
+
+  if (role.multi) {
+    if (isBound) {
+      inner += '<div class="multi-chips">';
+      for (let i = 0; i < binding.artifact_ids.length; i++) {
+        const aid = binding.artifact_ids[i];
+        inner += '<span class="multi-chip">';
+        inner += '<span>' + truncId(aid) + '</span>';
+        inner += '<span class="multi-chip-x" data-role="' + role.key + '" data-remove-idx="' + i + '">&times;</span>';
+        inner += '</span>';
+      }
+      inner += '</div>';
+      inner += '<button class="slot-add-btn" data-role="' + role.key + '" data-action="pick-add">+ Add</button>';
+    } else {
+      inner += '<div class="slot-empty">' + escapeHtml(role.hint) + '</div>';
+    }
+  } else {
+    if (isBound) {
+      const boundId = binding.artifact_id;
+      inner += '<div class="slot-bound-name">' + escapeHtml(binding.name || 'Bound artifact') + '</div>';
+      inner += '<div class="slot-bound-id">' + escapeHtml(boundId) + '</div>';
+      inner += '<button class="slot-clear" data-role="' + role.key + '" title="Clear binding">&times;</button>';
+    } else {
+      inner += '<div class="slot-empty">' + escapeHtml(role.hint) + '</div>';
+    }
+  }
+
+  return '<div class="' + cls + '" data-slot="' + role.key + '">' + inner + '</div>';
+}
+
+/* ===== Event listeners ===== */
+function attachSlotListeners() {
+  // Click empty slot → open picker
+  document.querySelectorAll('.slot').forEach(el => {
+    el.addEventListener('click', (e) => {
+      // Don't open picker if clicking clear or chip-x
+      if (e.target.closest('.slot-clear') || e.target.closest('.multi-chip-x') || e.target.closest('.slot-add-btn')) return;
+
+      const role = el.dataset.slot;
+      const roleDef = ROLES.find(r => r.key === role);
+      if (!roleDef) return;
+
+      // For single-valued, only open picker if unbound
+      if (!roleDef.multi && el.classList.contains('bound')) return;
+
+      openPicker(role);
+    });
+  });
+
+  // Clear single binding
+  document.querySelectorAll('.slot-clear').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const role = btn.dataset.role;
+      clearBinding(role);
+    });
+  });
+
+  // Remove chip from multi
+  document.querySelectorAll('.multi-chip-x').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const role = btn.dataset.role;
+      const idx = parseInt(btn.dataset.removeIdx, 10);
+      removeMultiItem(role, idx);
+    });
+  });
+
+  // Add button on multi
+  document.querySelectorAll('.slot-add-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const role = btn.dataset.role;
+      openPicker(role);
+    });
+  });
+}
+
+/* ===== Picker ===== */
+let _pendingPickerRole = null;
+
+function openPicker(role) {
+  _pendingPickerRole = role;
+  const roleDef = ROLES.find(r => r.key === role);
+  sendNotification('ui/open-picker', {
+    role: role,
+    multi: roleDef ? roleDef.multi : false,
+    label: roleDef ? roleDef.label : role,
+  });
+}
+
+function handlePickerResult(params) {
+  if (!params || !_pendingPickerRole) return;
+  const role = _pendingPickerRole;
+  _pendingPickerRole = null;
+  const roleDef = ROLES.find(r => r.key === role);
+
+  if (params.artifact_id) {
+    if (roleDef && roleDef.multi) {
+      addToMultiBinding(role, params.artifact_id);
+    } else {
+      setBinding(role, params.artifact_id);
+    }
+  }
+}
+
+/* ===== Drag-drop (forwarded from host) ===== */
+function handleDragOver(params) {
+  if (!params || !params.payload) return;
+  // Hit-test: find slot under coordinates
+  const slot = slotAtPoint(params.x, params.y);
+  clearDragStates();
+  if (slot) {
+    const role = slot.dataset.slot;
+    if (isValidDrop(role, params.payload)) {
+      slot.classList.add('drag-over');
+    } else {
+      slot.classList.add('drag-invalid');
+    }
+    _activeDragSlot = role;
+  }
+}
+
+function handleDragLeave(params) {
+  clearDragStates();
+  _activeDragSlot = null;
+}
+
+function handleDrop(params) {
+  clearDragStates();
+  if (!params || !params.payload) return;
+  const slot = slotAtPoint(params.x, params.y);
+  if (!slot) return;
+  const role = slot.dataset.slot;
+  if (!isValidDrop(role, params.payload)) return;
+
+  const payload = params.payload;
+  if (payload.kind === 'collection') {
+    const roleDef = ROLES.find(r => r.key === role);
+    if (roleDef && roleDef.multi) {
+      addToMultiBinding(role, payload.id);
+    } else {
+      setBinding(role, payload.id);
+    }
+  } else if (payload.kind === 'artifacts' && payload.ids && payload.ids.length === 1) {
+    const roleDef = ROLES.find(r => r.key === role);
+    if (roleDef && roleDef.multi) {
+      addToMultiBinding(role, payload.ids[0]);
+    } else {
+      setBinding(role, payload.ids[0]);
+    }
+  }
+  _activeDragSlot = null;
+}
+
+function isValidDrop(role, payload) {
+  if (!payload) return false;
+  return payload.kind === 'collection' || payload.kind === 'artifacts';
+}
+
+function clearDragStates() {
+  document.querySelectorAll('.slot').forEach(s => {
+    s.classList.remove('drag-over', 'drag-invalid');
+  });
+}
+
+function slotAtPoint(x, y) {
+  const slots = document.querySelectorAll('.slot');
+  for (const slot of slots) {
+    const r = slot.getBoundingClientRect();
+    if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+      return slot;
+    }
+  }
+  return null;
+}
+
+/* ===== Binding mutations (via update_artifact) ===== */
+async function setBinding(role, artifactId) {
+  const newBindings = Object.assign({}, _bindings);
+  newBindings[role] = { artifact_id: artifactId };
+  await saveBindings(newBindings);
+}
+
+async function clearBinding(role) {
+  const newBindings = Object.assign({}, _bindings);
+  delete newBindings[role];
+  await saveBindings(newBindings);
+}
+
+async function addToMultiBinding(role, artifactId) {
+  const newBindings = Object.assign({}, _bindings);
+  const existing = newBindings[role] || {};
+  const ids = Array.isArray(existing.artifact_ids) ? existing.artifact_ids.slice() : [];
+  if (!ids.includes(artifactId)) {
+    ids.push(artifactId);
+  }
+  newBindings[role] = { artifact_ids: ids };
+  await saveBindings(newBindings);
+}
+
+async function removeMultiItem(role, idx) {
+  const newBindings = Object.assign({}, _bindings);
+  const existing = newBindings[role] || {};
+  const ids = Array.isArray(existing.artifact_ids) ? existing.artifact_ids.slice() : [];
+  ids.splice(idx, 1);
+  if (ids.length === 0) {
+    delete newBindings[role];
+  } else {
+    newBindings[role] = { artifact_ids: ids };
+  }
+  await saveBindings(newBindings);
+}
+
+async function saveBindings(newBindings) {
+  _errorMsg = '';
+  try {
+    const ctx = _artifactData.context || {};
+    ctx.bindings = newBindings;
+    await sendRpc('tools/call', {
+      name: 'update_artifact',
+      arguments: {
+        id: _artifactId,
+        patch: { context: JSON.stringify(ctx) },
+      },
+    });
+    _bindings = newBindings;
+    render();
+  } catch (e) {
+    _errorMsg = 'Failed to save: ' + e.message;
+    render();
+  }
+}
+
+/* ===== Utilities ===== */
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function truncId(id) {
+  if (!id) return '';
+  return id.length > 12 ? id.slice(0, 8) + '…' : id;
+}
+</script>
+</body>
+</html>

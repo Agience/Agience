@@ -48,7 +48,7 @@ The `env` field on HTTP transports is forwarded as **HTTP headers** to the downs
 ### View tools and resources
 
 1. Open the workspace containing the mcp-server artifact.
-2. Trigger `GET /mcp/workspaces/{id}/servers` (or use the UI sidebar MCP section).
+2. Trigger `GET /mcp/servers` (or use the UI sidebar MCP section).
 3. Expected response: array of `MCPServerInfo` with `tools` and `resources` populated.
 
 ### Import a resource as an artifact
@@ -97,7 +97,7 @@ Look for:
 ### "Authorization header not being sent"
 
 Verify in browser DevTools → Network tab:
-1. Find request to `/mcp/workspaces/{id}/servers`
+1. Find request to `/mcp/servers`
 2. Check backend logs for the actual HTTP request to the external server
 3. Headers should include: `Authorization: Bearer ...`
 

@@ -267,7 +267,8 @@ mcp = FastMCP(
         "Treat every access control decision as consequential � revoke first, escalate later."
     ),
 )
-
+from artifact_helpers import register_types_manifest
+register_types_manifest(mcp, "seraph", __file__)
 
 # ---------------------------------------------------------------------------
 # Authorizer tools

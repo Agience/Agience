@@ -27,22 +27,37 @@ import os
 import uuid as _uuid
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlparse as _urlparse
+from urllib.parse import urlparse as _urlparse, urlunparse as _urlunparse
 
 from dotenv import load_dotenv as _load_dotenv
+
+
+def _origin_only(uri: str) -> str:
+    """Return scheme+host+port (strip path, query, fragment)."""
+    p = _urlparse(uri)
+    return _urlunparse((p.scheme, p.netloc, "", "", "", ""))
 
 # ---------------------------------------------------------------------------
 #  Phase 0: Load .env into os.environ (before any os.getenv calls)
 # ---------------------------------------------------------------------------
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-_load_dotenv(_REPO_ROOT / ".env", override=True)
+# In Docker the backend is copied to /app/ (core/config.py -> /app/core/config.py)
+# so two parents reach the backend root.  In local dev the .env lives one
+# level above (the repo root).  Walk upward until we find it.
+_BACKEND_ROOT = Path(__file__).resolve().parent.parent
+_ENV_FILE: Optional[Path] = None
+for _candidate in (_BACKEND_ROOT / ".env", _BACKEND_ROOT.parent / ".env"):
+    if _candidate.is_file():
+        _ENV_FILE = _candidate
+        break
+if _ENV_FILE:
+    _load_dotenv(_ENV_FILE, override=True)
 
 # ---------------------------------------------------------------------------
 #  Phase 1: Static constants (safe at import time, never change)
 # ---------------------------------------------------------------------------
 
-BASE_DIR = _REPO_ROOT
+BASE_DIR = _BACKEND_ROOT.parent if (_BACKEND_ROOT.parent / "backend").is_dir() else _BACKEND_ROOT
 KEYS_DIR = Path(os.getenv("KEYS_DIR", str(BASE_DIR / ".data" / "keys")))
 
 # Platform identity — deterministic UUID, never changes.
@@ -56,6 +71,11 @@ AGIENCE_PLATFORM_USER_ID = str(_uuid.uuid5(_uuid.NAMESPACE_URL, "agience://platf
 
 # AI
 OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY")
+ANTHROPIC_API_KEY: Optional[str] = os.getenv("ANTHROPIC_API_KEY")
+GOOGLE_API_KEY: Optional[str] = os.getenv("GOOGLE_API_KEY")
+OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+AI_DEFAULT_PROVIDER: str = os.getenv("AI_DEFAULT_PROVIDER", "openai")
+AI_DEFAULT_MODEL: str = os.getenv("AI_DEFAULT_MODEL", "gpt-4o-mini")
 
 # ArangoDB
 ARANGO_HOST: str = os.getenv("ARANGO_HOST", "127.0.0.1")
@@ -95,11 +115,11 @@ PASSWORD_PBKDF2_ITERS: int = 200000
 JWT_KEY_ID: str = "s1"
 
 # URIs & identity
-FRONTEND_URI: str = "http://localhost:5173"
-BACKEND_URI: str = "http://localhost:8081"
-PLATFORM_CLIENT_ID: str = "agience-client"
-AUTHORITY_DOMAIN: str = "localhost"
-AUTHORITY_ISSUER: str = "http://localhost:8081"
+FRONTEND_URI: str = os.getenv("FRONTEND_URI", "http://localhost:8080")
+BACKEND_URI: str = os.getenv("BACKEND_URI", "http://localhost:8080/api")
+PLATFORM_CLIENT_ID: str = os.getenv("PLATFORM_CLIENT_ID", "agience-client")
+AUTHORITY_DOMAIN: str = _urlparse(os.getenv("BACKEND_URI", "http://localhost:8080/api")).hostname or "localhost"
+AUTHORITY_ISSUER: str = _origin_only(os.getenv("BACKEND_URI", "http://localhost:8080/api"))
 
 # Features
 ALLOW_LOCAL_MCP_SERVERS: bool = False
@@ -208,6 +228,11 @@ def load_bootstrap_settings() -> None:
 _SETTING_MAP: dict[str, tuple[str, type]] = {
     # AI
     "ai.openai_api_key": ("OPENAI_API_KEY", str),
+    "ai.anthropic_api_key": ("ANTHROPIC_API_KEY", str),
+    "ai.google_api_key": ("GOOGLE_API_KEY", str),
+    "ai.ollama_base_url": ("OLLAMA_BASE_URL", str),
+    "ai.default_provider": ("AI_DEFAULT_PROVIDER", str),
+    "ai.default_model": ("AI_DEFAULT_MODEL", str),
 
     # ArangoDB
     "db.arango.host": ("ARANGO_HOST", str),
@@ -318,7 +343,8 @@ def load_settings_from_db() -> None:
     Rebind all module-level variables from PlatformSettingsService cache.
     Must be called after PlatformSettingsService.load_all().
     """
-    global OPENAI_API_KEY
+    global OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_API_KEY
+    global OLLAMA_BASE_URL, AI_DEFAULT_PROVIDER, AI_DEFAULT_MODEL
     global ARANGO_HOST, ARANGO_PORT, ARANGO_USERNAME, ARANGO_DATABASE
     global GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, GOOGLE_OAUTH_REDIRECT_URI
     global MICROSOFT_ENTRA_TENANT, MICROSOFT_ENTRA_CLIENT_ID, MICROSOFT_ENTRA_CLIENT_SECRET, MICROSOFT_ENTRA_REDIRECT_URI
@@ -343,6 +369,11 @@ def load_settings_from_db() -> None:
     from services.platform_settings_service import settings
 
     for setting_key, (var_name, converter) in _SETTING_MAP.items():
+        # Environment variables override DB values (operator .env wins).
+        env_val = os.getenv(var_name)
+        if env_val is not None:
+            continue
+
         value = settings.get(setting_key)
         if value is None:
             continue
@@ -364,7 +395,7 @@ def load_settings_from_db() -> None:
     except Exception:
         _hostname = "localhost"
     AUTHORITY_DOMAIN = _hostname
-    # Use BACKEND_URI as-is for the issuer — preserves scheme, host, and port exactly.
-    # Constructing from hostname alone would strip non-standard ports (e.g. :8081) and
-    # force HTTPS which breaks local and non-proxy self-hosted deployments.
-    AUTHORITY_ISSUER = _backend_uri
+    # Use the origin (scheme+host+port) of BACKEND_URI as the issuer.
+    # BACKEND_URI may include a path prefix (e.g. /api) which must not
+    # appear in the JWT issuer/audience.
+    AUTHORITY_ISSUER = _origin_only(_backend_uri)

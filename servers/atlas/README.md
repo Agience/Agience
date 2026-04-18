@@ -37,4 +37,4 @@ pip install -r requirements.txt
 python server.py
 ```
 
-Several implemented Atlas tools currently delegate into existing backend agents through `POST /agents/invoke`; keep the README aligned to the live `server.py` surface, not the legacy source history.
+Several implemented Atlas tools currently delegate into existing backend agents through `POST /artifacts/{id}/invoke`; keep the README aligned to the live `server.py` surface, not the legacy source history.

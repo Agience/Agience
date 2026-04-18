@@ -1,9 +1,9 @@
 """Tests for POST /artifacts/{artifact_id}/op/{op_name} — custom operation route.
 
 Covers:
-- Builtin server slug → UUID resolution (e.g. "nexus" → registered artifact UUID)
-- UUID passthrough when caller already has a UUID
-- Unknown slug (non-server-slug string) falls through to normal 404 path
+- UUID passthrough when caller provides a UUID
+- Root-id fallback when version _key differs from root_id
+- Unknown string falls through to normal 404 path
 - Reserved op names are rejected with 400
 - OperationNotDeclared raises 404
 - Happy-path dispatch via mocked operation_dispatcher
@@ -53,9 +53,8 @@ def authed_client(app, mock_db):
     synthetic_grant.can_update = True
     synthetic_grant.can_invoke = True
     synthetic_grant.can_add = True
-    synthetic_grant.can_search = True
+    synthetic_grant.can_share = True
     synthetic_grant.resource_id = None
-    synthetic_grant.resource_type = None
     ctx = AuthContext(user_id="u-1", principal_type="user", grants=[synthetic_grant])
     app.dependency_overrides[get_auth] = lambda: ctx
     app.dependency_overrides[get_arango_db] = lambda: mock_db
@@ -78,73 +77,16 @@ def _make_server_doc(key: str, name: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Slug → UUID resolution
+# Artifact lookup and dispatch
 # ---------------------------------------------------------------------------
 
-class TestSlugResolution:
-    """The op route resolves builtin server names to their registered artifact UUID
-    via server_registry before calling _find_artifact."""
-
-    def test_slug_resolves_to_uuid_before_db_lookup(self, authed_client, mock_db):
-        """When 'nexus' is passed as artifact_id, the registry resolves it
-        to a UUID which is used for _find_artifact."""
-        nexus_key = "aaaabbbb-cccc-dddd-eeee-ffffaaaabbbb"
-        nexus_doc = _make_server_doc(nexus_key, "nexus")
-
-        # Mock DB: returns document when asked for the _key, not the slug
-        workspace_coll = MagicMock()
-        workspace_coll.get.side_effect = lambda key: nexus_doc if key == nexus_key else None
-        mock_db.collection.return_value = workspace_coll
-
-        with (
-            patch("services.server_registry.resolve_name_to_id", return_value=nexus_key),
-            patch("services.operation_dispatcher.dispatch", new=AsyncMock(return_value={"text": "hello"})),
-        ):
-            resp = authed_client.post(
-                "/artifacts/nexus/op/resources_read",
-                json={"uri": "ui://nexus/vnd.agience.mcp-server.html", "workspace_id": "ws-1"},
-            )
-
-        assert resp.status_code == 200
-        # Confirm DB was called with the resolved _key, not the slug
-        workspace_coll.get.assert_called_with(nexus_key)
-
-    def test_slug_uses_root_id_lookup_when_version_key_differs(self, authed_client, mock_db):
-        """If the resolved UUID is a root_id (not the current version _key),
-        the route should still find the artifact and dispatch the operation."""
-        nexus_root_id = "aaaabbbb-cccc-dddd-eeee-ffffaaaabbbb"
-        nexus_doc = {
-            "_key": "version-1",
-            "id": "version-1",
-            "root_id": nexus_root_id,
-            "context": {
-                "content_type": "application/vnd.agience.mcp-server+json",
-                "mcp_server": {"name": "nexus", "transport": "builtin"},
-            },
-        }
-
-        workspace_coll = MagicMock()
-        workspace_coll.get.return_value = None
-        mock_db.collection.return_value = workspace_coll
-        mock_db.aql.execute.return_value = iter([nexus_doc])
-
-        with (
-            patch("services.server_registry.resolve_name_to_id", return_value=nexus_root_id),
-            patch("services.operation_dispatcher.dispatch", new=AsyncMock(return_value={"text": "hello"})),
-        ):
-            resp = authed_client.post(
-                "/artifacts/nexus/op/resources_read",
-                json={"uri": "ui://nexus/vnd.agience.mcp-server.html", "workspace_id": "ws-1"},
-            )
-
-        assert resp.status_code == 200
-        workspace_coll.get.assert_called_with(nexus_root_id)
-        mock_db.aql.execute.assert_called_once()
+class TestArtifactLookup:
+    """Tests for artifact lookup with version/root_id handling."""
 
     def test_check_access_uses_doc_key_not_root_id(self, app, mock_db):
         """When grants are not pre-loaded (live JWT path), check_access must be
-        called with doc._key, not the root_id.  Using root_id caused a DB key-miss
-        inside check_access which swallowed the 404 and left grants empty → 403."""
+        called with doc._key, not the root_id.  Using root_id causes a DB key-miss
+        inside check_access which swallows the 404 and leaves grants empty → 403."""
         nexus_root_id = "aaaabbbb-cccc-dddd-eeee-ffffddddeeee"
         version_key = "nexus-version-key-202604"
         version_doc = {
@@ -179,15 +121,12 @@ class TestSlugResolution:
 
         client = TestClient(app)
         with (
-            patch("services.server_registry.resolve_name_to_id", return_value=nexus_root_id),
-            # Patch the source module — the router does a local import
-            # `from services.dependencies import check_access as _check_access`,
-            # so patching routers.artifacts_router.check_access has no effect.
+            # Call with the root_id directly (no slug resolution since slug shim was removed)
             patch("services.dependencies.check_access", side_effect=fake_check_access),
             patch("services.operation_dispatcher.dispatch", new=AsyncMock(return_value={"ok": True})),
         ):
             resp = client.post(
-                "/artifacts/nexus/op/resources_read",
+                f"/artifacts/{nexus_root_id}/op/resources_read",
                 json={"uri": "ui://nexus/vnd.agience.mcp-server.html", "workspace_id": "ws-live"},
             )
 
@@ -200,67 +139,6 @@ class TestSlugResolution:
             f"check_access received '{checked_with[0]}' but expected doc._key='{version_key}'; "
             f"using root_id '{nexus_root_id}' causes a 404 inside check_access → 403 from dispatcher"
         )
-
-    def test_all_platform_slugs_use_root_id_lookup_when_version_key_differs(self, authed_client, mock_db):
-        """Every built-in server name should dispatch when the resolved id is a
-        root_id and the current artifact row has a different version _key."""
-        from services import server_registry
-
-        for name in server_registry.all_names():
-            mock_db.aql.execute.reset_mock()
-            root_id = f"{name[:4]}-root-0000-0000-0000-000000000000"
-            version_doc = {
-                "_key": f"{name}-version-1",
-                "id": f"{name}-version-1",
-                "root_id": root_id,
-                "context": {
-                    "content_type": "application/vnd.agience.mcp-server+json",
-                    "mcp_server": {"name": name, "transport": "builtin"},
-                },
-            }
-
-            workspace_coll = MagicMock()
-            workspace_coll.get.return_value = None
-            mock_db.collection.return_value = workspace_coll
-            mock_db.aql.execute.return_value = iter([version_doc])
-
-            with (
-                patch("services.server_registry.resolve_name_to_id", return_value=root_id),
-                patch("services.operation_dispatcher.dispatch", new=AsyncMock(return_value={"ok": True})),
-            ):
-                resp = authed_client.post(
-                    f"/artifacts/{name}/op/resources_read",
-                    json={"uri": f"ui://{name}/vnd.agience.mcp-server.html", "workspace_id": "ws-1"},
-                )
-
-            assert resp.status_code == 200
-            workspace_coll.get.assert_called_with(root_id)
-            mock_db.aql.execute.assert_called_once()
-
-    def test_all_platform_names_resolve(self, authed_client, mock_db):
-        """Every server name in the manifest should trigger resolution."""
-        from services import server_registry
-
-        for name in server_registry.all_names():
-            test_key = f"{name[:4]}-uuid-0000-0000-0000-000000000000"
-            doc = _make_server_doc(test_key, name)
-
-            workspace_coll = MagicMock()
-            workspace_coll.get.side_effect = lambda key, u=test_key, d=doc: d if key == u else None
-            mock_db.collection.return_value = workspace_coll
-
-            with (
-                patch("services.server_registry.resolve_name_to_id", return_value=test_key),
-                patch("services.operation_dispatcher.dispatch", new=AsyncMock(return_value={"ok": True})),
-            ):
-                authed_client.post(
-                    f"/artifacts/{name}/op/resources_read",
-                    json={"uri": "ui://test/view.html"},
-                )
-
-            workspace_coll.get.assert_called_with(test_key), (
-                f"Name '{name}' was not resolved to _key before DB lookup"
-            )
 
     def test_uuid_passthrough_unchanged(self, authed_client, mock_db):
         """When a full UUID is passed (not a server slug), it is passed directly
@@ -337,20 +215,12 @@ class TestOpAuthGuard:
         app.dependency_overrides.clear()
         assert resp.status_code == 401
 
-    def test_server_principal_without_user_id_is_allowed_past_auth_guard(self, app, mock_db):
-        """Servers (principal_type='server') have no user_id but are not anonymous —
-        they must pass the auth guard and only 404 if the artifact is absent."""
+    def test_server_principal_without_user_id_is_rejected(self, app, mock_db):
+        """Server-only principals (no user_id) must be rejected by the auth guard —
+        all custom operations require a user identity (via delegation token)."""
         ctx = AuthContext(user_id=None, principal_type="server", grants=[])
         app.dependency_overrides[get_auth] = lambda: ctx
         app.dependency_overrides[get_arango_db] = lambda: mock_db
-
-        workspace_coll = MagicMock()
-        workspace_coll.get.return_value = None
-        collection_coll = MagicMock()
-        collection_coll.get.return_value = None
-        mock_db.collection.side_effect = lambda name: (
-            workspace_coll if "workspace" in name else collection_coll
-        )
 
         client = TestClient(app)
         resp = client.post(
@@ -359,8 +229,7 @@ class TestOpAuthGuard:
         )
 
         app.dependency_overrides.clear()
-        # 404 because artifact not found, NOT 401
-        assert resp.status_code == 404
+        assert resp.status_code == 401
 
 
 # ---------------------------------------------------------------------------

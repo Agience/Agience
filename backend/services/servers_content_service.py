@@ -37,6 +37,7 @@ from db.arango import (
 from entities.collection import Collection as CollectionEntity
 from entities.artifact import Artifact as ArtifactEntity
 from services.bootstrap_types import (
+    AGIENCE_CORE_SLUG,
     ALL_SERVERS_COLLECTION_SLUG,
     MCP_SERVER_CONTENT_TYPE,
     SERVER_ARTIFACT_SLUG_PREFIX,
@@ -57,6 +58,16 @@ def ensure_platform_servers(arango_db: StandardDatabase) -> Optional[str]:
     if not collection_id:
         return None
 
+    # Seed agience-core (the kernel MCP server) as a proper artifact
+    _ensure_server_artifact_linked(
+        arango_db,
+        collection_id=collection_id,
+        root_id=get_id(AGIENCE_CORE_SLUG),
+        context=_build_agience_core_context(),
+        content="Agience Core — the platform's built-in MCP server providing artifact CRUD, search, commit, and agent invocation tools.",
+        content_type=MCP_SERVER_CONTENT_TYPE,
+    )
+
     for entry in server_registry.all_entries():
         artifact_slug = f"{SERVER_ARTIFACT_SLUG_PREFIX}{entry.name}"
         root_id = get_id(artifact_slug)
@@ -64,11 +75,19 @@ def ensure_platform_servers(arango_db: StandardDatabase) -> Optional[str]:
             arango_db,
             collection_id=collection_id,
             root_id=root_id,
-            slug=artifact_slug,
             context=_build_server_context(entry),
             content=_build_server_content(entry),
             content_type=MCP_SERVER_CONTENT_TYPE,
         )
+
+    # TODO: Capability materialization should happen lazily on first
+    # connection, not at startup.  When the platform first connects to
+    # each server (e.g. via list_servers_for_workspace or invoke_tool),
+    # call mcp_service.materialize_server_capabilities(db, root_id,
+    # AGIENCE_PLATFORM_USER_ID) to create tool/resource/prompt child
+    # artifacts.  Until then, callers can trigger it on demand via
+    # POST /artifacts/{server_id}/op/materialize_capabilities.
+
     return collection_id
 
 
@@ -124,7 +143,6 @@ def _ensure_all_servers_collection(arango_db: StandardDatabase) -> Optional[str]
             created_by=AGIENCE_PLATFORM_USER_ID,
             content_type=COLLECTION_CONTENT_TYPE,
             state=CollectionEntity.STATE_COMMITTED,
-            slug=ALL_SERVERS_COLLECTION_SLUG,
             created_time=now,
             modified_time=now,
         )
@@ -143,7 +161,6 @@ def _ensure_server_artifact_linked(
     *,
     collection_id: str,
     root_id: str,
-    slug: str,
     context: str,
     content: str,
     content_type: Optional[str] = None,
@@ -182,7 +199,6 @@ def _ensure_server_artifact_linked(
             content_type=content_type,
             created_by=AGIENCE_PLATFORM_USER_ID,
             created_time=now,
-            slug=slug,
         )
         db_create_artifact(arango_db, artifact)
         db_add_artifact_to_collection(
@@ -192,8 +208,8 @@ def _ensure_server_artifact_linked(
             artifact.id,
         )
         logger.info(
-            "Created platform MCP server artifact (slug=%s, root_id=%s, version=%s)",
-            slug, root_id, artifact.id,
+            "Created platform MCP server artifact (root_id=%s, version=%s)",
+            root_id, artifact.id,
         )
         return True
     except Exception:
@@ -237,3 +253,24 @@ def _build_server_content(entry) -> str:
         f"{entry.title} — {entry.role}. "
         f"{entry.summary}"
     )
+
+
+def _build_agience_core_context() -> str:
+    """Build the artifact context for the kernel MCP server (agience-core).
+
+    Follows the same shape as persona server contexts but with
+    ``transport: "local"`` since agience-core is an in-process MCP
+    handler, not an external HTTP server.
+    """
+    context = {
+        "type": "mcp-server",
+        "content_type": MCP_SERVER_CONTENT_TYPE,
+        "title": "Agience Core",
+        "description": "The platform's built-in MCP server — artifact CRUD, search, commit, and agent invocation.",
+        "mcp_server": {
+            "version": 1,
+            "kind": "platform-builtin",
+            "transport": "local",
+        },
+    }
+    return json.dumps(context, separators=(",", ":"), ensure_ascii=False)

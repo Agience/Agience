@@ -85,7 +85,6 @@ def ensure_current_instance_authority(arango_db: StandardDatabase) -> Optional[s
             content_type=AUTHORITY_CONTENT_TYPE,
             created_by=AGIENCE_PLATFORM_USER_ID,
             created_time=now,
-            slug=AUTHORITY_ARTIFACT_SLUG,
         )
         db_create_artifact(arango_db, artifact)
         db_add_artifact_to_collection(
@@ -147,7 +146,6 @@ def _ensure_authority_collection(arango_db: StandardDatabase) -> Optional[str]:
             created_by=AGIENCE_PLATFORM_USER_ID,
             content_type=COLLECTION_CONTENT_TYPE,
             state=CollectionEntity.STATE_COMMITTED,
-            slug=AUTHORITY_COLLECTION_SLUG,
             created_time=now,
             modified_time=now,
         )

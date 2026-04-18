@@ -21,7 +21,7 @@ export interface SidebarSectionsPreferences {
 }
 
 export interface BrowserPreferences {
-  hiddenWorkspaceTabIds?: string[];
+  // Explicit list of workspace IDs currently docked in the UI.
   dockedWorkspaceCardIds?: string[];
 }
 

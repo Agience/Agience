@@ -174,7 +174,7 @@ def _api_key() -> Optional[APIKeyEntity]:
 @mcp.tool()
 def search(
     query: str,
-    size: int = 20,
+    limit: int = 20,
     offset: int = 0,
     collection_ids: Optional[List[str]] = None,
 ) -> dict:
@@ -182,6 +182,12 @@ def search(
 
     Returns ranked results with highlights, scores, and source metadata.
     Supports scoping to specific collections (workspaces are collections).
+
+    Args:
+        query: Search query text.
+        limit: Maximum number of results to return (default 20).
+        offset: Number of results to skip for pagination.
+        collection_ids: Optional list of collection/workspace IDs to scope the search.
     """
     from search.accessor.search_accessor import SearchAccessor, SearchQuery
 
@@ -192,7 +198,7 @@ def search(
             user_id=_user_id(),
             collection_ids=collection_ids,
             from_=offset,
-            size=size,
+            size=limit,
         )
     )
 
@@ -349,10 +355,16 @@ def create_artifact(
     context: Optional[Dict[str, Any]] = None,
     workspace_id: Optional[str] = None,
     collection_id: Optional[str] = None,
+    content_type: Optional[str] = None,
 ) -> dict:
     """Create a new artifact.
 
     Provide content (text body) and optional context (JSON metadata).
+
+    content_type: MIME type for the artifact (e.g. "text/markdown", "application/json").
+      If provided here, it is also written into context.content_type so viewers
+      resolve correctly. If context already contains content_type, this parameter
+      takes precedence.
 
     Destination (exactly one required):
     - workspace_id: stages the artifact as a draft in a workspace (default flow).
@@ -366,6 +378,11 @@ def create_artifact(
     if not workspace_id and not collection_id:
         raise ValueError("Either workspace_id or collection_id is required.")
 
+    # Ensure content_type is reflected in context so viewers resolve correctly.
+    ctx = context or {}
+    if content_type:
+        ctx["content_type"] = content_type
+
     if collection_id:
         # --- Direct-to-collection path ---
         api_key = _api_key()
@@ -377,7 +394,7 @@ def create_artifact(
             arango,
             _user_id(),
             collection_id,
-            context=json.dumps(context or {}),
+            context=json.dumps(ctx),
             content=content,
             actor_id=actor_id,
         )
@@ -393,8 +410,9 @@ def create_artifact(
                 db,
                 _user_id(),
                 workspace_id,
-                context=json.dumps(context or {}),
+                context=json.dumps(ctx),
                 content=content,
+                content_type=content_type,
             )
             return {"artifact": _serialize_workspace_artifact(artifact)}
         finally:
@@ -573,22 +591,119 @@ def commit_workspace(
 # ===================================================================
 
 
+_DEFAULT_ASK_SYSTEM_PROMPT = (
+    "You are a knowledge assistant. Answer the user's question based ONLY on "
+    "the provided evidence artifacts. Cite sources by their title. If the evidence "
+    "is insufficient, say so. Be concise."
+)
+
+_MODE_INSTRUCTIONS: Dict[str, str] = {
+    "summarize": "Synthesize a concise answer from the retrieved sources. Connect related information across sources.",
+    "enumerate": "Return a structured list or table. Do not summarize narratively. One item per row.",
+    "lookup": "Return the matching artifact content directly. Do not rephrase or summarize.",
+    "compare": "Compare the retrieved sources. Present similarities, differences, and contradictions.",
+}
+
+_FORMAT_INSTRUCTIONS: Dict[str, str] = {
+    "text/markdown": "Format your response as Markdown (tables, headers, lists, code blocks as appropriate).",
+    "text/mermaid": "Format your entire response as a single Mermaid diagram (graph, sequenceDiagram, erDiagram, etc.). Output ONLY the Mermaid markup, no surrounding prose.",
+    "text/csv": "Format your response as CSV with a header row. Output ONLY the CSV data, no surrounding prose.",
+    "text/plain": "Format your response as plain unformatted text. No Markdown syntax.",
+    "application/json": "Format your response as valid JSON. Output ONLY the JSON, no surrounding prose.",
+}
+
+_SUPPORTED_CONTENT_TYPES = frozenset(_FORMAT_INSTRUCTIONS.keys())
+_DEFAULT_CONTENT_TYPE = "text/markdown"
+
+
 @mcp.tool()
 def ask(
     question: str,
+    workspace_id: Optional[str] = None,
     collection_ids: Optional[List[str]] = None,
     max_sources: int = 5,
+    mode: Optional[str] = None,
+    accepts: Optional[List[str]] = None,
 ) -> dict:
     """Ask a question grounded in the Agience knowledge base.
 
     Searches relevant artifacts, then synthesizes an answer with citations.
-    You can scope the search to specific collections (workspaces are collections).
 
-    Returns an answer with source references.
+    Scoping:
+    - Provide ``workspace_id`` to use the workspace's ask binding
+      (collection scope, custom system prompt, workspace LLM config).
+    - Provide ``collection_ids`` to search specific collections directly.
+    - Omit both for a global search with the platform default LLM.
+
+    Mode (answer shape hint):
+    - ``summarize`` (default) — concise narrative answer
+    - ``enumerate`` — structured list or table, no narrative
+    - ``lookup`` — return matching artifact content directly
+    - ``compare`` — highlight differences and contradictions
+
+    Accepts (content-type preferences, ordered):
+    - ``text/markdown`` (default), ``text/mermaid``, ``text/csv``,
+      ``text/plain``, ``application/json``
+    - First producible type is used; falls back to ``text/markdown``.
+
+    Workspace binding shape (set in workspace context):
+      {"bindings": {"ask": {"collection_id": "...", "system_prompt_id": "..."}}}
+
+    Returns ``content_type``, ``content``, and ``sources``.
     """
     from search.accessor.search_accessor import SearchAccessor, SearchQuery
+    from services import workspace_service
+    from services import llm_service
+    import db.arango as arango_db
 
     user_id = _user_id()
+    db = _get_arango()
+
+    resolved_mode = mode if mode in _MODE_INSTRUCTIONS else "summarize"
+    accept_list = accepts or [_DEFAULT_CONTENT_TYPE]
+
+    # Resolve workspace bindings (search scope + system prompt + renderer support)
+    system_prompt = _DEFAULT_ASK_SYSTEM_PROMPT
+    ws_supported_types: Optional[frozenset] = None
+    if workspace_id:
+        # Search scope — resolve ask binding's collection_id
+        bound_collection = workspace_service.resolve_binding(
+            db, user_id, workspace_id, "ask",
+        )
+        if bound_collection and not collection_ids:
+            collection_ids = [bound_collection]
+
+        # System prompt + workspace renderer support
+        try:
+            ws_context = workspace_service.get_workspace_context(db, user_id, workspace_id)
+            ask_binding = (ws_context or {}).get("bindings", {}).get("ask", {})
+
+            # Custom system prompt
+            prompt_artifact_id = ask_binding.get("system_prompt_id")
+            if prompt_artifact_id:
+                prompt_artifact = arango_db.get_artifact(db, prompt_artifact_id)
+                if prompt_artifact:
+                    custom_prompt = _resolve_content(prompt_artifact)
+                    if custom_prompt:
+                        system_prompt = custom_prompt
+
+            # Workspace-supported renderers (optional)
+            supported = ask_binding.get("supported_types")
+            if isinstance(supported, list) and supported:
+                ws_supported_types = frozenset(supported)
+        except Exception as e:
+            logger.warning("ask tool: failed to resolve workspace ask binding: %s", e)
+
+    # Resolve content type — first match in accepts that is both platform-supported
+    # and workspace-supported (if workspace declares a list)
+    resolved_content_type = _DEFAULT_CONTENT_TYPE
+    for ct in accept_list:
+        if ct not in _SUPPORTED_CONTENT_TYPES:
+            continue
+        if ws_supported_types is not None and ct not in ws_supported_types:
+            continue
+        resolved_content_type = ct
+        break
 
     # Step 1: search for relevant artifacts
     accessor = SearchAccessor()
@@ -617,40 +732,39 @@ def ask(
 
     if not context_parts:
         return {
-            "answer": "I couldn't find any relevant information in the knowledge base for that question.",
+            "content_type": resolved_content_type,
+            "content": "I couldn't find any relevant information in the knowledge base for that question.",
             "sources": [],
         }
 
-    # Step 2: synthesize answer with LLM
-    try:
-        from services.openai_helpers import create_chat_completion
+    # Step 2: build prompt with mode + format instructions
+    prompt_parts = [system_prompt]
+    mode_instruction = _MODE_INSTRUCTIONS.get(resolved_mode)
+    if mode_instruction:
+        prompt_parts.append(mode_instruction)
+    format_instruction = _FORMAT_INSTRUCTIONS.get(resolved_content_type)
+    if format_instruction:
+        prompt_parts.append(format_instruction)
+    full_system_prompt = "\n\n".join(prompt_parts)
 
+    # Step 3: synthesize answer with LLM
+    try:
         evidence = "\n\n---\n\n".join(context_parts)
         messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a knowledge assistant. Answer the user's question based ONLY on "
-                    "the provided evidence artifacts. Cite sources by their title. If the evidence "
-                    "is insufficient, say so. Be concise."
-                ),
-            },
-            {
-                "role": "user",
-                "content": f"Evidence:\n{evidence}\n\nQuestion: {question}",
-            },
+            {"role": "system", "content": full_system_prompt},
+            {"role": "user", "content": f"Evidence:\n{evidence}\n\nQuestion: {question}"},
         ]
-        answer, _ = create_chat_completion(
-            model="gpt-4o-mini",
-            messages=messages,
+        answer, _ = llm_service.complete(
+            db, user_id, messages,
+            workspace_id=workspace_id,
             temperature=0.3,
             max_output_tokens=1024,
         )
     except Exception as e:
-        logger.error(f"ask tool: LLM call failed: {e}")
+        logger.error("ask tool: LLM call failed: %s", e)
         answer = "Search returned results but I was unable to synthesize an answer. See sources below."
 
-    return {"answer": answer, "sources": sources}
+    return {"content_type": resolved_content_type, "content": answer, "sources": sources}
 
 
 # ===================================================================
@@ -893,7 +1007,11 @@ def memory(
             db, user_id, workspace_id, scope,
         )
         if not collection_id:
-            return {"error": f"No '{scope}' binding in workspace {workspace_id}"}
+            return {
+                "error": f"No '{scope}' binding in workspace {workspace_id}. "
+                f"To fix, update the workspace context to include a binding: "
+                f'{{"bindings": {{"{scope}": {{"collection_id": "<target-collection-id>"}}}}}}'  
+            }
 
         # -- read --
         if command == "read":
@@ -915,7 +1033,7 @@ def memory(
         if command == "write":
             if not key:
                 return {"error": "Provide 'key' for write command."}
-            existing = arango_db.find_artifact_by_slug_in_collection(
+            existing = arango_db.find_artifact_by_name_in_collection(
                 db, collection_id, key,
             )
             ctx = json.dumps(context or {})
@@ -935,7 +1053,7 @@ def memory(
                     db, user_id, collection_id,
                     context=ctx,
                     content=content or "",
-                    slug=key,
+                    name=key,
                 )
                 return {
                     "action": "created",
@@ -994,7 +1112,7 @@ def memory(
         if command == "delete":
             if not key:
                 return {"error": "Provide 'key' for delete command."}
-            artifact = arango_db.find_artifact_by_slug_in_collection(
+            artifact = arango_db.find_artifact_by_name_in_collection(
                 db, collection_id, key,
             )
             if not artifact:
@@ -1117,6 +1235,198 @@ def _serialize_artifact_version(c: Any) -> Dict[str, Any]:
 
 
 # ===================================================================
+# TOOLS  -- Share Loop (Phase 1 GTM)
+# ===================================================================
+
+def _run_async(coro: Any) -> Any:
+    """Run *coro* to completion from a sync MCP tool.
+
+    FastMCP tool handlers are sync functions, but several code paths we
+    depend on (``operation_dispatcher.dispatch``, ``email_service.send_*``)
+    are async. This helper handles both "no running loop" and "loop already
+    running in this thread" (FastAPI/uvicorn worker) cases.
+    """
+    import asyncio
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    # Already inside a running loop (FastAPI worker). Offload to a thread
+    # so we don't deadlock on asyncio.run() inside a running loop.
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=False, readOnlyHint=False))
+def invoke_artifact(
+    artifact_id: str,
+    workspace_id: Optional[str] = None,
+    input: Optional[str] = None,
+    artifacts: Optional[List[str]] = None,
+    params: Optional[Dict[str, Any]] = None,
+) -> dict:
+    """Invoke an artifact's ``invoke`` operation.
+
+    Generic across artifact types: transforms, packages, or anything with
+    an ``operations.invoke`` block in its ``type.json``. Dispatches through
+    the operation_dispatcher so grant checks, event emission, and handler
+    selection all run the same way as ``POST /artifacts/{id}/invoke``.
+    """
+    from services.operation_dispatcher import dispatch, DispatchContext
+
+    db = _get_arango()
+    try:
+        user_id = _user_id()
+        doc = db.collection("artifacts").get(artifact_id)
+        if not doc:
+            return {"error": f"Artifact {artifact_id} not found"}
+
+        # Match the shape artifacts_router builds so the handler's
+        # input_mapping resolution sees the fields it expects.
+        merged_params = dict(params or {})
+        if workspace_id and "workspace_id" not in merged_params:
+            merged_params["workspace_id"] = workspace_id
+        if artifacts and "artifacts" not in merged_params:
+            merged_params["artifacts"] = artifacts
+        merged_params["transform_id"] = artifact_id
+
+        body: Dict[str, Any] = {
+            "workspace_id": workspace_id,
+            "artifacts": artifacts or [],
+            "input": input or "",
+            "params": merged_params,
+            "arguments": merged_params,
+        }
+
+        ctx = DispatchContext(
+            user_id=user_id,
+            actor_id=user_id,
+            grants=list(getattr(_current_auth_context.get(None), "grants", []) or []),
+            arango_db=db,
+        )
+
+        result = _run_async(dispatch("invoke", doc, body, ctx))
+        if hasattr(result, "to_dict"):
+            return {"result": result.to_dict()}
+        return {"result": result}
+    except Exception as exc:  # noqa: BLE001 --- MCP tools return error dicts
+        logger.warning("invoke_artifact failed: %s", exc)
+        return {"error": str(exc)}
+    finally:
+        db.close()
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True, readOnlyHint=False))
+def share(
+    workspace_id: str,
+    role: str = "viewer",
+    target_email: Optional[str] = None,
+    max_claims: int = 1,
+    message: Optional[str] = None,
+) -> dict:
+    """Share a workspace by creating an invite link.
+
+    Creates an invite grant with a role preset (viewer / editor /
+    collaborator / admin) and returns a claim URL. When *target_email* is
+    set, sends a transactional invite email via the configured provider.
+
+    Workspace-only by design: collections are reached through packages /
+    registry / direct grants, not the invite flow.
+
+    Grant-level access check: the caller must hold ``can_share`` or
+    ``can_admin`` on the workspace.
+
+    Human gate: ``destructiveHint=True`` so MCP clients (Claude Code,
+    Cursor, etc.) prompt the user before executing.
+    """
+    from services import grant_service
+
+    db = _get_arango()
+    try:
+        user_id = _user_id()
+
+        # Enforce can_share permission on the workspace.
+        if not grant_service.can_share(db, user_id, workspace_id):
+            return {"error": "You need share or admin permission on this workspace."}
+
+        try:
+            grant, raw_token = grant_service.create_invite(
+                db,
+                user_id=user_id,
+                resource_id=workspace_id,
+                role=role,
+                target_email=target_email,
+                max_claims=max_claims,
+                message=message,
+            )
+        except ValueError as exc:
+            return {"error": str(exc)}
+
+        return {
+            "grant_id": grant.id,
+            "claim_url": grant_service.build_claim_url(raw_token),
+            "claim_token": raw_token,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("share failed: %s", exc)
+        return {"error": str(exc)}
+    finally:
+        db.close()
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True, readOnlyHint=False))
+def accept_invite(
+    token: str,
+) -> dict:
+    """Accept a workspace invite by presenting the claim token.
+
+    Requires a human-initiated JWT (``principal_type == "user"``).
+    Server tokens and raw API keys cannot accept invites --- accepting is
+    a consent decision that should not happen autonomously.
+
+    Delegation tokens (issued by Core when a server acts on a user's
+    behalf) resolve to ``principal_type = "user"`` with an ``actor`` set,
+    so they are allowed.
+    """
+    from services import grant_service
+    from services.grant_service import (
+        InviteNotFound,
+        InviteExhausted,
+        InviteIdentityMismatch,
+    )
+
+    db = _get_arango()
+    try:
+        user_id = _user_id()
+
+        auth = _current_auth_context.get(None)
+        principal_type = getattr(auth, "principal_type", "user") if auth else "user"
+        if principal_type != "user":
+            return {"error": "Only human-initiated tokens can accept invites"}
+
+        try:
+            grant = grant_service.claim_invite(db, user_id, token)
+        except InviteIdentityMismatch as exc:
+            return {"error": str(exc)}
+        except InviteExhausted as exc:
+            return {"error": str(exc)}
+        except InviteNotFound as exc:
+            return {"error": str(exc)}
+        # grant_service.claim_invite emits grant.invite.claimed internally.
+
+        return {
+            "grant_id": grant.id,
+            "resource_id": grant.resource_id,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("accept_invite failed: %s", exc)
+        return {"error": str(exc)}
+    finally:
+        db.close()
+
+
+# ===================================================================
 # Direct tool dispatch (for Order-artifact execution without HTTP round-trip)
 # ===================================================================
 
@@ -1136,6 +1446,10 @@ TOOL_REGISTRY: Dict[str, Any] = {
     "discover_tools": discover_tools,
     "todo_list": todo_list,
     "memory": memory,
+    # Share loop
+    "invoke_artifact": invoke_artifact,
+    "share": share,
+    "accept_invite": accept_invite,
 }
 
 

@@ -100,7 +100,7 @@ Everything in Agience is an **Artifact**.
 
 An artifact can represent a transcript, decision, action item, document, synthesis, operator definition, or tool surface. Each artifact carries content, context, and transform information, with provenance attached so the artifact remains inspectable over time.
 
-Artifacts are described by the **Information Triangle**: Content (what it is), Context (where it fits), and Transform (how it was produced or should be transformed).
+Artifacts are described by the **Information Triangle**: Content (what it is), Context (where it fits), and Operator (how it is produced or transformed).
 
 In the UI, artifacts are presented as **cards** — visual components that humans interact with.
 

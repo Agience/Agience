@@ -20,6 +20,7 @@ from typing import Optional
 from arango.database import StandardDatabase
 
 from services.bootstrap_types import (
+    AGIENCE_CORE_SLUG,
     ALL_PLATFORM_COLLECTION_SLUGS,
     AUTHORITY_ARTIFACT_SLUG,
     HOST_ARTIFACT_SLUG,
@@ -88,6 +89,7 @@ def _all_platform_slugs() -> list[str]:
     slugs: list[str] = []
     slugs.extend(ALL_PLATFORM_COLLECTION_SLUGS)
     slugs.extend([AUTHORITY_ARTIFACT_SLUG, HOST_ARTIFACT_SLUG, AGENCY_ARTIFACT_SLUG])
+    slugs.append(AGIENCE_CORE_SLUG)
     slugs.extend(f"{AGENT_ARTIFACT_SLUG_PREFIX}{s}" for s in PLATFORM_AGENT_SLUGS)
     slugs.extend(f"{LLM_CONNECTION_SLUG_PREFIX}{s}" for s in PLATFORM_LLM_CONNECTION_SLUGS)
     slugs.extend(f"{SERVER_ARTIFACT_SLUG_PREFIX}{name}" for name in server_registry.all_names())

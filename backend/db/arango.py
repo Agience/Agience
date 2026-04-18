@@ -260,44 +260,48 @@ def delete_collection(db: StandardDatabase, id: str) -> bool:
     return delete_document(db, COLLECTION_ARTIFACTS, id)
 
 
-def get_collection_by_slug(db: StandardDatabase, slug: str) -> Optional[CollectionEntity]:
-    try:
-        cursor = db.aql.execute(
-            "FOR c IN @@col FILTER c.slug == @slug AND c.content_type != null LIMIT 1 RETURN c",
-            bind_vars={"@col": COLLECTION_ARTIFACTS, "slug": slug},
-        )
-        for doc in cursor:
-            return from_arango_doc(doc, CollectionEntity)
-        return None
-    except Exception as e:
-        logger.error("Failed slug lookup in %s for slug=%s: %s", COLLECTION_ARTIFACTS, slug, e)
-        return None
-
-
 def get_containers_for_user(
     db: StandardDatabase,
     user_id: str,
     content_type: Optional[str] = None,
 ) -> List[CollectionEntity]:
     """
-    Query artifacts that are containers (have content_type set) owned by user_id.
+    Query containers (workspaces / collections) accessible to user_id via grants.
     Optionally filter to a specific content_type.
     """
     try:
         if content_type:
             aql = """
-            FOR a IN @@col
-              FILTER a.created_by == @uid AND a.content_type == @ct
-              RETURN a
+            FOR g IN @@grants
+              FILTER g.grantee_id == @uid
+                 AND g.grantee_type == "user"
+                 AND g.state == "active"
+                 AND g.can_read == true
+                 AND (g.expires_at == null OR g.expires_at > DATE_ISO8601(DATE_NOW()))
+              FOR a IN @@col
+                FILTER a._key == g.resource_id AND a.content_type == @ct
+                RETURN a
             """
-            bind_vars = {"@col": COLLECTION_ARTIFACTS, "uid": user_id, "ct": content_type}
+            bind_vars = {
+                "@grants": COLLECTION_GRANTS, "@col": COLLECTION_ARTIFACTS,
+                "uid": user_id, "ct": content_type,
+            }
         else:
             aql = """
-            FOR a IN @@col
-              FILTER a.created_by == @uid AND a.content_type != null
-              RETURN a
+            FOR g IN @@grants
+              FILTER g.grantee_id == @uid
+                 AND g.grantee_type == "user"
+                 AND g.state == "active"
+                 AND g.can_read == true
+                 AND (g.expires_at == null OR g.expires_at > DATE_ISO8601(DATE_NOW()))
+              FOR a IN @@col
+                FILTER a._key == g.resource_id AND a.content_type != null
+                RETURN a
             """
-            bind_vars = {"@col": COLLECTION_ARTIFACTS, "uid": user_id}
+            bind_vars = {
+                "@grants": COLLECTION_GRANTS, "@col": COLLECTION_ARTIFACTS,
+                "uid": user_id,
+            }
         cursor = db.aql.execute(aql, bind_vars=bind_vars)
         return [from_arango_doc(row, CollectionEntity) for row in cursor if row]
     except Exception as e:
@@ -339,20 +343,6 @@ def get_artifact(db: StandardDatabase, artifact_id: str) -> Optional[ArtifactEnt
     return get_document_by_key(db, ArtifactEntity, COLLECTION_ARTIFACTS, artifact_id)
 
 
-def get_artifact_by_slug(db: StandardDatabase, slug: str) -> Optional[ArtifactEntity]:
-    try:
-        cursor = db.aql.execute(
-            "FOR a IN @@col FILTER a.slug == @slug LIMIT 1 RETURN a",
-            bind_vars={"@col": COLLECTION_ARTIFACTS, "slug": slug},
-        )
-        for doc in cursor:
-            return from_arango_doc(doc, ArtifactEntity)
-        return None
-    except Exception as e:
-        logger.error("Failed slug lookup in %s for slug=%s: %s", COLLECTION_ARTIFACTS, slug, e)
-        return None
-
-
 def find_artifact_by_slug_in_collection(
     db: StandardDatabase, collection_id: str, slug: str,
 ) -> Optional[ArtifactEntity]:
@@ -380,6 +370,38 @@ def find_artifact_by_slug_in_collection(
         logger.error(
             "find_artifact_by_slug_in_collection(%s, %s) failed: %s",
             collection_id, slug, e,
+        )
+        return None
+
+
+def find_artifact_by_name_in_collection(
+    db: StandardDatabase, collection_id: str, name: str,
+) -> Optional[ArtifactEntity]:
+    """Find a non-archived artifact by name within a specific collection.
+
+    Used by the memory tool for key-value lookups. Returns the draft-preferred
+    version if multiple exist for the same name.
+    """
+    try:
+        cursor = db.aql.execute(
+            """
+            FOR a IN @@col
+              FILTER a.collection_id == @cid
+                 AND a.name == @name
+                 AND a.state != "archived"
+              SORT a.state == "draft" ? 0 : 1, a.created_time DESC
+              LIMIT 1
+              RETURN a
+            """,
+            bind_vars={"@col": COLLECTION_ARTIFACTS, "cid": collection_id, "name": name},
+        )
+        for doc in cursor:
+            return from_arango_doc(doc, ArtifactEntity)
+        return None
+    except Exception as e:
+        logger.error(
+            "find_artifact_by_name_in_collection(%s, %s) failed: %s",
+            collection_id, name, e,
         )
         return None
 
@@ -570,7 +592,10 @@ def list_collection_artifacts(
       SORT e.order_key
       RETURN MERGE(chosen, {{
         order_key: e.order_key,
-        has_committed_version: committed_count > 0
+        has_committed_version: committed_count > 0,
+        origin: e.origin,
+        propagate: e.propagate,
+        relationship: e.relationship
       }})
     """
     try:
@@ -703,17 +728,25 @@ def delete_artifacts_by_root(db: StandardDatabase, root_id: str) -> List[str]:
 
 
 def archive_artifact(db: StandardDatabase, user_id: str, artifact_id: str) -> bool:
-    """Mark an artifact as archived (soft delete). Owner check via `created_by`."""
+    """Mark an artifact as archived (soft delete). Access checked via grants."""
     try:
         artifact = get_artifact(db, artifact_id)
         if not artifact:
             logger.warning("Artifact %s not found for archiving", artifact_id)
             return False
 
-        if getattr(artifact, "created_by", None) != user_id:
+        parent_id = getattr(artifact, "collection_id", None)
+        if not parent_id:
+            logger.warning("Artifact %s has no collection_id", artifact_id)
+            return False
+
+        grants = get_active_grants_for_principal_resource(
+            db, grantee_id=user_id, resource_id=parent_id,
+        )
+        if not any(getattr(g, "can_delete", False) for g in grants):
             logger.warning(
-                "User %s attempted to archive artifact %s owned by %s",
-                user_id, artifact_id, getattr(artifact, "created_by", "unknown"),
+                "User %s lacks delete grant for artifact %s in collection %s",
+                user_id, artifact_id, parent_id,
             )
             return False
 
@@ -779,24 +812,41 @@ def add_artifact_to_collection(
     collection_id: str,
     root_id: str,
     order_key: Optional[str] = None,
+    *,
+    origin: bool = True,
+    propagate: Optional[List[str]] = None,
+    relationship: Optional[str] = None,
 ) -> bool:
     """
     Insert or upsert a `collection_artifacts` edge pointing at
     `artifacts/{root_id}`. If *order_key* is not given, places the new
     edge at the end (after the current max key).
 
+    *origin*: True if this is the artifact's creation edge (grants
+    propagate through). False for link edges (no grant propagation).
+
+    *propagate*: CRUDEASIO action list controlling which permissions
+    flow through this edge. ``None`` = all actions propagate (default
+    for origin edges). For link edges, defaults to no propagation.
+
+    *relationship*: Edge type label (e.g. ``"operator"``). ``None``
+    means containment (the default).
     """
     if order_key is None:
         order_key = after_key(get_last_order_key(db, collection_id))
 
-    edge = {
+    edge: Dict[str, Any] = {
         "_key": _edge_key(collection_id, root_id),
         "_from": f"{COLLECTION_ARTIFACTS}/{collection_id}",
         "_to": f"{COLLECTION_ARTIFACTS}/{root_id}",
         "_type": "CollectionArtifact",
         "root_id": root_id,
         "order_key": order_key,
+        "origin": origin,
+        "propagate": propagate,
     }
+    if relationship is not None:
+        edge["relationship"] = relationship
     try:
         coll = db.collection(COLLECTION_COLLECTION_ARTIFACTS)
         coll.insert(edge, overwrite=True)
@@ -810,6 +860,9 @@ def add_artifacts_to_collection_batch(
     db: StandardDatabase,
     collection_id: str,
     root_id_order_pairs: List[Tuple[str, str]],
+    *,
+    origin: bool = True,
+    propagate: Optional[List[str]] = None,
 ) -> bool:
     """Batch insert/upsert edges. Pairs are (root_id, order_key)."""
     if not root_id_order_pairs:
@@ -824,6 +877,8 @@ def add_artifacts_to_collection_batch(
                 "_type": "CollectionArtifact",
                 "root_id": rid,
                 "order_key": ok,
+                "origin": origin,
+                "propagate": propagate,
             }
             for (rid, ok) in root_id_order_pairs
         ]
@@ -833,7 +888,10 @@ def add_artifacts_to_collection_batch(
         logger.error("add_artifacts_to_collection_batch(%s) failed: %s", collection_id, e)
         ok_all = True
         for rid, order_key in root_id_order_pairs:
-            if not add_artifact_to_collection(db, collection_id, rid, order_key):
+            if not add_artifact_to_collection(
+                db, collection_id, rid, order_key,
+                origin=origin, propagate=propagate,
+            ):
                 ok_all = False
         return ok_all
 
@@ -869,6 +927,112 @@ def remove_all_edges_for_root(db: StandardDatabase, root_id: str) -> int:
     except Exception as e:
         logger.error("remove_all_edges_for_root(%s) failed: %s", root_id, e)
         return 0
+
+
+def count_children(db: StandardDatabase, root_id: str) -> int:
+    """Count outbound containment edges from an artifact (as a container)."""
+    try:
+        cursor = db.aql.execute(
+            f"""
+            RETURN LENGTH(
+              FOR e IN {COLLECTION_COLLECTION_ARTIFACTS}
+                FILTER e._from == CONCAT("{COLLECTION_ARTIFACTS}/", @rid)
+                FILTER e.relationship == null
+                RETURN 1
+            )
+            """,
+            bind_vars={"rid": root_id},
+        )
+        result = list(cursor)
+        return result[0] if result else 0
+    except Exception as e:
+        logger.error("count_children(%s) failed: %s", root_id, e)
+        return 0
+
+
+def has_children(db: StandardDatabase, root_id: str) -> bool:
+    """Check whether an artifact has any child edges (containment only)."""
+    try:
+        cursor = db.aql.execute(
+            f"""
+            RETURN LENGTH(
+              FOR e IN {COLLECTION_COLLECTION_ARTIFACTS}
+                FILTER e._from == CONCAT("{COLLECTION_ARTIFACTS}/", @rid)
+                FILTER e.relationship == null
+                LIMIT 1
+                RETURN 1
+            ) > 0
+            """,
+            bind_vars={"rid": root_id},
+        )
+        result = list(cursor)
+        return bool(result and result[0])
+    except Exception as e:
+        logger.error("has_children(%s) failed: %s", root_id, e)
+        return False
+
+
+def get_origin_parent(
+    db: StandardDatabase, root_id: str
+) -> Optional[Tuple[str, Optional[List[str]]]]:
+    """Find the origin parent of an artifact via its origin edge.
+
+    Returns ``(parent_id, propagate_mask)`` or ``None`` if no origin
+    edge exists. Only edges with ``origin == true`` are considered.
+    """
+    try:
+        cursor = db.aql.execute(
+            f"""
+            FOR e IN {COLLECTION_COLLECTION_ARTIFACTS}
+              FILTER e._to == CONCAT("{COLLECTION_ARTIFACTS}/", @rid)
+              FILTER e.origin == true
+              FILTER e.relationship == null
+              LIMIT 1
+              LET parent_key = REGEX_REPLACE(e._from, "^[^/]+/", "")
+              RETURN {{ parent_id: parent_key, propagate: e.propagate }}
+            """,
+            bind_vars={"rid": root_id},
+        )
+        result = list(cursor)
+        if not result:
+            return None
+        row = result[0]
+        return (row["parent_id"], row.get("propagate"))
+    except Exception as e:
+        logger.error("get_origin_parent(%s) failed: %s", root_id, e)
+        return None
+
+
+def get_relationship_target(
+    db: StandardDatabase,
+    from_root_id: str,
+    relationship: str,
+) -> Optional[str]:
+    """Return the root_id of the first artifact connected to *from_root_id*
+    via an outbound edge with the given *relationship* label.
+
+    Returns ``None`` if no matching edge exists.
+    """
+    try:
+        cursor = db.aql.execute(
+            f"""
+            FOR e IN {COLLECTION_COLLECTION_ARTIFACTS}
+              FILTER e._from == CONCAT("{COLLECTION_ARTIFACTS}/", @rid)
+              FILTER e.relationship == @rel
+              LIMIT 1
+              RETURN e.root_id
+            """,
+            bind_vars={"rid": from_root_id, "rel": relationship},
+        )
+        for v in cursor:
+            return v
+        return None
+    except Exception as e:
+        logger.error(
+            "get_relationship_target(%s, %s) failed: %s",
+            from_root_id, relationship, e,
+        )
+        return None
 
 
 def set_edge_order_key(
@@ -1113,7 +1277,6 @@ def get_grant_by_id(db: StandardDatabase, grant_id: str) -> Optional[GrantEntity
 def get_active_grants_for_principal_resource(
     db: StandardDatabase,
     grantee_id: str,
-    resource_type: str,
     resource_id: str,
 ) -> List[GrantEntity]:
     try:
@@ -1121,7 +1284,6 @@ def get_active_grants_for_principal_resource(
             """
             FOR g IN @@col
               FILTER g.grantee_id == @grantee_id
-                 AND g.resource_type == @resource_type
                  AND g.resource_id == @resource_id
                  AND g.state == "active"
                  AND (g.expires_at == null OR g.expires_at > DATE_ISO8601(DATE_NOW()))
@@ -1130,7 +1292,6 @@ def get_active_grants_for_principal_resource(
             bind_vars={
                 "@col": COLLECTION_GRANTS,
                 "grantee_id": grantee_id,
-                "resource_type": resource_type,
                 "resource_id": resource_id,
             },
         )
@@ -1174,7 +1335,6 @@ def get_active_collection_ids_for_user(db: StandardDatabase, user_id: str) -> Li
             FOR g IN @@col
               FILTER g.grantee_id == @user_id
                  AND g.grantee_type == "user"
-                 AND g.resource_type == "collection"
                  AND g.state == "active"
                  AND g.can_read == true
                  AND (g.expires_at == null OR g.expires_at > DATE_ISO8601(DATE_NOW()))
@@ -1191,7 +1351,7 @@ def get_active_collection_ids_for_user(db: StandardDatabase, user_id: str) -> Li
 def get_grants_for_collection(db: StandardDatabase, collection_id: str) -> List[GrantEntity]:
     return query_documents(
         db, GrantEntity, COLLECTION_GRANTS,
-        {"resource_type": "collection", "resource_id": collection_id},
+        {"resource_id": collection_id},
     )
 
 
@@ -1205,9 +1365,15 @@ def upsert_user_collection_grant(
     user_id: str,
     collection_id: str,
     granted_by: str,
+    can_create: bool = False,
     can_read: bool = True,
     can_update: bool = False,
+    can_delete: bool = False,
+    can_evict: bool = False,
     can_invoke: bool = False,
+    can_add: bool = False,
+    can_share: bool = False,
+    can_admin: bool = False,
     name: Optional[str] = None,
 ) -> Tuple[GrantEntity, bool]:
     """Upsert a user→collection grant. Returns ``(grant, changed)`` where
@@ -1215,40 +1381,41 @@ def upsert_user_collection_grant(
     updated, and ``False`` when the existing grant already matched."""
     from datetime import datetime, timezone
 
+    _FLAG_NAMES = (
+        "can_create", "can_read", "can_update", "can_delete",
+        "can_evict", "can_invoke", "can_add", "can_share", "can_admin",
+    )
+    requested = {
+        "can_create": can_create, "can_read": can_read, "can_update": can_update,
+        "can_delete": can_delete, "can_evict": can_evict, "can_invoke": can_invoke,
+        "can_add": can_add, "can_share": can_share, "can_admin": can_admin,
+    }
+
     existing_list = get_active_grants_for_principal_resource(
-        db, grantee_id=user_id, resource_type="collection", resource_id=collection_id
+        db, grantee_id=user_id, resource_id=collection_id
     )
     if existing_list:
         existing = existing_list[0]
-        if existing.can_read == can_read and existing.can_update == can_update and existing.can_invoke == can_invoke:
+        if all(getattr(existing, f) == requested[f] for f in _FLAG_NAMES):
             return existing, False
         now = datetime.now(timezone.utc).isoformat()
-        patch: dict = {
-            "can_read": can_read,
-            "can_update": can_update,
-            "can_invoke": can_invoke,
-            "modified_time": now,
-        }
+        patch: dict = {**requested, "modified_time": now}
         if name is not None:
             patch["name"] = name
         col = db.collection(COLLECTION_GRANTS)
         col.update({"_key": existing.id, **patch})
-        existing.can_read = can_read
-        existing.can_update = can_update
-        existing.can_invoke = can_invoke
+        for f in _FLAG_NAMES:
+            setattr(existing, f, requested[f])
         existing.modified_time = now
         return existing, True
 
     now = datetime.now(timezone.utc).isoformat()
     grant = GrantEntity(
-        resource_type="collection",
         resource_id=collection_id,
         grantee_type=GrantEntity.GRANTEE_USER,
         grantee_id=user_id,
         granted_by=granted_by,
-        can_read=can_read,
-        can_update=can_update,
-        can_invoke=can_invoke,
+        **requested,
         requires_identity=True,
         state=GrantEntity.STATE_ACTIVE,
         name=name,
@@ -1286,8 +1453,7 @@ def get_active_grant_key_grants_for_collection(db: StandardDatabase, collection_
         cursor = db.aql.execute(
             """
             FOR g IN @@col
-              FILTER g.resource_type == "collection"
-                 AND g.resource_id == @collection_id
+              FILTER g.resource_id == @collection_id
                  AND g.grantee_type == "grant_key"
                  AND g.state == "active"
                  AND (g.expires_at == null OR g.expires_at > DATE_ISO8601(DATE_NOW()))

@@ -1,26 +1,31 @@
 # ──────────────────────────────────────────────────────────────────────
-# Agience — Edge Install Script (Windows)
+# Agience — Home Install Script (Windows) — Edge Channel
 #
-# One shot: pulls the latest edge images, starts Agience, opens your browser.
-# No git clone, no build tools, no .env file required.
+# One shot: installs, starts Agience, and opens your browser.
+# Uses edge images (latest main branch builds).
+#
+# Source: https://github.com/Agience/agience-core/blob/main/packaging/install/home/install-edge.ps1
 #
 # Usage:
-#   irm https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/edge/install.ps1 | iex
+#   irm https://get.agience.ai/home/install-edge.ps1 | iex
 #
 # After install:
 #   agience up      start
 #   agience down    stop
-#   agience update  pull latest edge and restart
 # ──────────────────────────────────────────────────────────────────────
 #Requires -Version 5.1
+[CmdletBinding()]
+param(
+    [string]$DataPath = ''
+)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # ── Configuration ────────────────────────────────────────────────────
 
-$InstallDir = Join-Path $env:USERPROFILE '.agience'
-$BinDir     = Join-Path $InstallDir 'bin'
-$ComposeUrl = 'https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/edge/docker-compose.yml'
+$InstallDir = if ($DataPath) { $DataPath } else { Join-Path $env:USERPROFILE '.agience' }
+$BinDir     = Join-Path $env:USERPROFILE '.agience\bin'
+$ComposeUrl = 'https://raw.githubusercontent.com/Agience/agience-core/main/packaging/install/home/docker-compose.yml'
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -46,8 +51,8 @@ function Add-ToUserPath {
 
 Write-Host ""
 Write-Host "  +--------------------------------------+" -ForegroundColor Magenta
-Write-Host "  |        Agience -- Edge Install       |" -ForegroundColor Magenta
-Write-Host "  |        latest main build             |" -ForegroundColor Magenta
+Write-Host "  |     Agience -- Install (edge)       |" -ForegroundColor Magenta
+Write-Host "  |        home.agience.ai               |" -ForegroundColor Magenta
 Write-Host "  +--------------------------------------+" -ForegroundColor Magenta
 Write-Host ""
 
@@ -83,7 +88,7 @@ Write-Ok "Docker is installed and running"
 Write-Info "Checking for port conflicts..."
 
 $conflicts = @()
-foreach ($port in @(5173, 8081, 8082)) {
+foreach ($port in @(80, 443)) {
     $used = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
     if ($used) { $conflicts += $port }
 }
@@ -91,7 +96,7 @@ foreach ($port in @(5173, 8081, 8082)) {
 if ($conflicts.Count -gt 0) {
     Write-Warn "Ports in use: $($conflicts -join ', '). Stop those services before running 'agience up'."
 } else {
-    Write-Ok "Ports 5173, 8081, and 8082 are available"
+    Write-Ok "Ports 80 and 443 are available"
 }
 
 # ── Step 3: Create Install Directory ────────────────────────────────
@@ -105,7 +110,7 @@ New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 New-Item -ItemType Directory -Path $BinDir     -Force | Out-Null
 
 if ($isUpdate) {
-    Write-Warn "Existing installation found — updating compose file and restarting"
+    Write-Warn "Existing installation found — updating and restarting"
 } else {
     Write-Ok "Created $InstallDir"
 }
@@ -122,9 +127,27 @@ if ((Get-Item $composeFile).Length -eq 0) {
 
 Write-Ok "Compose file downloaded"
 
+# ── Step 4b: Set edge channel ───────────────────────────────────────
+
+$envFile = Join-Path $InstallDir '.env'
+if (Test-Path $envFile) {
+    # Normalize: read raw bytes to detect missing trailing newline
+    $raw = [System.IO.File]::ReadAllText($envFile)
+    if ($raw.Length -gt 0 -and $raw[-1] -ne "`n") {
+        $raw += "`n"
+        [System.IO.File]::WriteAllText($envFile, $raw)
+    }
+    $lines = Get-Content $envFile | Where-Object { $_ -notmatch '^VERSION=' }
+    $lines += 'VERSION=edge'
+    Set-Content -Path $envFile -Value $lines -Encoding ASCII
+} else {
+    Set-Content -Path $envFile -Value 'VERSION=edge' -Encoding ASCII
+}
+Write-Ok "Channel set to edge"
+
 # ── Step 5: Pull Images ─────────────────────────────────────────────
 
-Write-Info "Pulling edge images (this may take a few minutes)..."
+Write-Info "Pulling container images (this may take a few minutes)..."
 Write-Host ""
 
 Push-Location $InstallDir
@@ -154,14 +177,13 @@ if "%1"=="down"   goto do_down
 if "%1"=="logs"   goto do_logs
 if "%1"=="update" goto do_update
 if "%1"=="status" goto do_status
-if "%1"=="reset"  goto do_reset
-echo Usage: agience [up^|down^|logs^|update^|status^|reset]
+echo Usage: agience [up^|down^|logs^|update^|status]
 exit /b 1
 
 :do_up
 docker compose up -d
 echo.
-echo Agience is running. Open: http://localhost:5173
+echo Agience is running. Open: https://home.agience.ai
 goto done
 
 :do_down
@@ -179,35 +201,6 @@ goto done
 
 :do_status
 docker compose ps
-goto done
-
-:do_reset
-echo.
-echo ============================================================
-echo   FACTORY RESET - THIS WILL PERMANENTLY DELETE ALL DATA
-echo ============================================================
-echo.
-echo   This will stop all containers and delete all persistent
-echo   data (database, object store, search index, keys).
-echo   The setup wizard will run on next start.
-echo.
-set /p "CONFIRM=   Are you sure? [y/N] "
-if /i not "%CONFIRM%"=="y" (
-    echo Aborted.
-    goto done
-)
-echo.
-echo Stopping containers...
-docker compose down
-echo Deleting data...
-if exist "%AGIENCE_DIR%\.data" (
-    rmdir /s /q "%AGIENCE_DIR%\.data"
-    echo Data deleted.
-) else (
-    echo No data directory found - already clean.
-)
-echo.
-echo Reset complete. Run 'agience up' to start fresh.
 goto done
 
 :done
@@ -228,60 +221,37 @@ Push-Location $InstallDir
 docker compose up -d
 Pop-Location
 
-Write-Ok "Agience is starting"
+Write-Ok "Agience is running"
 
-# ── Step 8: Wait for frontend and open browser ───────────────────────
+# ── Read setup token ─────────────────────────────────────────────────
 
-Write-Info "Waiting for frontend to be ready..."
+$tokenFile = Join-Path $InstallDir '.data\keys\setup.token'
+$SetupToken = if (Test-Path $tokenFile) { (Get-Content $tokenFile -Raw).Trim() } else { '' }
 
-$deadline = (Get-Date).AddSeconds(180)
-$opened = $false
-while ((Get-Date) -lt $deadline) {
-    try {
-        $r = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:5173 -TimeoutSec 3 -ErrorAction Stop
-        if ($r.StatusCode -eq 200) {
-            $url = 'http://localhost:5173'
-            $tokenFile = Join-Path $InstallDir '.data\keys\setup.token'
-            if (Test-Path $tokenFile) {
-                try {
-                    $status = Invoke-RestMethod -Uri 'http://127.0.0.1:8081/setup/status' -TimeoutSec 5 -ErrorAction Stop
-                    if ($status.needs_setup) {
-                        $token = (Get-Content $tokenFile -Raw).Trim()
-                        $url = "http://localhost:5173/setup?token=$token"
-                    }
-                } catch {}
-            }
-            Start-Process $url
-            $opened = $true
-            break
-        }
-    } catch {}
-    Start-Sleep -Seconds 3
-}
+# ── Step 8: Open browser ─────────────────────────────────────────────
 
-if (-not $opened) {
-    Write-Warn "Frontend not ready yet — visit http://localhost:5173 once containers are healthy"
-}
+Start-Process 'https://home.agience.ai'
 
 # ── Done ─────────────────────────────────────────────────────────────
 
 Write-Host ""
 Write-Host "  +--------------------------------------+" -ForegroundColor Green
-Write-Host "  |     Agience (edge) is running!     |" -ForegroundColor Green
+Write-Host "  |     Agience is running! (edge)      |" -ForegroundColor Green
 Write-Host "  +--------------------------------------+" -ForegroundColor Green
 Write-Host ""
-Write-Host "  Open:     http://localhost:5173" -ForegroundColor White
-Write-Host "  API:      http://localhost:8081" -ForegroundColor Gray
-Write-Host "  Servers:  http://localhost:8082" -ForegroundColor Gray
-Write-Host "  Data:     $InstallDir\.data\" -ForegroundColor Gray
+Write-Host "  Open:   https://home.agience.ai" -ForegroundColor White
+Write-Host "  Data:   $InstallDir\.data\" -ForegroundColor Gray
 Write-Host ""
+if ($SetupToken) {
+    Write-Host "  Setup:  $SetupToken" -ForegroundColor Yellow
+    Write-Host ""
+}
 Write-Host "  Commands:" -ForegroundColor White
 Write-Host "    agience up        start"
 Write-Host "    agience down      stop"
 Write-Host "    agience logs      watch logs"
-Write-Host "    agience update    pull latest edge images and restart"
+Write-Host "    agience update    pull latest images and restart"
 Write-Host "    agience status    show running containers"
-Write-Host "    agience reset     wipe all data and start fresh"
 Write-Host ""
 
 if ($pathUpdated) {

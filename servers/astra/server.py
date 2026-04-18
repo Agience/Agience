@@ -63,6 +63,9 @@ MCP_HOST: str = os.getenv("MCP_HOST", "0.0.0.0")
 MCP_PORT: int = int(os.getenv("MCP_PORT", "8087"))
 SRS_HTTP_API: str = os.getenv("SRS_HTTP_API", "http://localhost:1985").rstrip("/")
 STREAM_INGEST_URL: str = os.getenv("STREAM_INGEST_URL", "rtmp://localhost:1936/live").rstrip("/")
+# Optional: LLM connection artifact ID used by the PDF metadata extraction step.
+# If unset, metadata extraction is skipped.
+ASTRA_LLM_CONNECTION_ARTIFACT_ID: str = os.getenv("ASTRA_LLM_CONNECTION_ARTIFACT_ID", "")
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +125,7 @@ import sys as _sys
 from pathlib import Path as _Path
 _sys.path.insert(0, str(_Path(__file__).parent.parent / "_shared"))
 from agience_server_auth import AgieceServerAuth as _AgieceServerAuth
+from artifact_helpers import parse_artifact_context, get_artifact_content_type
 
 _auth = _AgieceServerAuth(ASTRA_CLIENT_ID, AGIENCE_API_URI)
 
@@ -144,8 +148,8 @@ async def server_startup() -> None:
 async def _get_workspace_artifact(workspace_id: str, artifact_id: str) -> dict:
     async with httpx.AsyncClient() as client:
         resp = await client.get(
-            f"{AGIENCE_API_URI}/workspaces/{workspace_id}/artifacts/{artifact_id}",
-            headers=await _headers(),
+            f"{AGIENCE_API_URI}/artifacts/{artifact_id}",
+            headers=await _user_headers(),
             timeout=30,
         )
     resp.raise_for_status()
@@ -156,7 +160,7 @@ async def _get_workspace_artifact_content_url(workspace_id: str, artifact_id: st
     async with httpx.AsyncClient() as client:
         resp = await client.get(
             f"{AGIENCE_API_URI}/artifacts/{artifact_id}/content-url",
-            headers=await _headers(),
+            headers=await _user_headers(),
             timeout=30,
         )
     resp.raise_for_status()
@@ -167,9 +171,14 @@ async def _get_workspace_artifact_content_url(workspace_id: str, artifact_id: st
 async def _create_workspace_artifact(workspace_id: str, context: dict, content: str) -> dict:
     async with httpx.AsyncClient() as client:
         resp = await client.post(
-            f"{AGIENCE_API_URI}/workspaces/{workspace_id}/artifacts",
-            headers=await _headers(),
-            json={"context": context, "content": content},
+            f"{AGIENCE_API_URI}/artifacts",
+            headers=await _user_headers(),
+            json={
+                "container_id": workspace_id,
+                "context": json.dumps(context),
+                "content": content,
+                "content_type": context.get("content_type"),
+            },
             timeout=30,
         )
     resp.raise_for_status()
@@ -179,13 +188,13 @@ async def _create_workspace_artifact(workspace_id: str, context: dict, content: 
 async def _update_workspace_artifact(workspace_id: str, artifact_id: str, *, context: dict | None = None, content: str | None = None) -> dict:
     body: dict = {}
     if context is not None:
-        body["context"] = context
+        body["context"] = json.dumps(context)
     if content is not None:
         body["content"] = content
     async with httpx.AsyncClient() as client:
         resp = await client.patch(
-            f"{AGIENCE_API_URI}/workspaces/{workspace_id}/artifacts/{artifact_id}",
-            headers=await _headers(),
+            f"{AGIENCE_API_URI}/artifacts/{artifact_id}",
+            headers=await _user_headers(),
             json=body,
             timeout=30,
         )
@@ -227,6 +236,9 @@ mcp = FastMCP(
     ),
 )
 
+from artifact_helpers import register_types_manifest
+register_types_manifest(mcp, "astra", __file__)
+
 
 # ---------------------------------------------------------------------------
 # Tool: ingest_file
@@ -262,10 +274,11 @@ async def ingest_file(
     if title:
         payload["title"] = title
 
+    payload["container_id"] = workspace_id
     async with httpx.AsyncClient() as client:
         resp = await client.post(
-            f"{AGIENCE_API_URI}/workspaces/{workspace_id}/artifacts",
-            headers=await _headers(),
+            f"{AGIENCE_API_URI}/artifacts",
+            headers=await _user_headers(),
             json=payload,
             timeout=30,
         )
@@ -314,9 +327,9 @@ async def document_text_extract(
         return json.dumps({"status": "error", "reason": f"failed to load artifact {source_artifact_id}: {exc}"})
 
     context = _parse_artifact_context(artifact)
-    mime = str(context.get("mime") or "").split(";", 1)[0].strip().lower()
+    mime = get_artifact_content_type(artifact)
     if mime != "application/pdf":
-        return json.dumps({"status": "error", "reason": f"source artifact is not a PDF (mime={mime or 'unknown'})"})
+        return json.dumps({"status": "error", "reason": f"source artifact is not a PDF (content_type={mime or 'unknown'})"})
 
     try:
         download_url = await _get_workspace_artifact_content_url(workspace_id, source_artifact_id)
@@ -438,20 +451,14 @@ async def process_uploaded_content(
     except httpx.HTTPError as exc:
         return json.dumps({"status": "error", "reason": f"failed to fetch artifact: {exc}"})
 
-    raw_context = artifact.get("context") or {}
-    if isinstance(raw_context, str):
-        try:
-            raw_context = json.loads(raw_context)
-        except json.JSONDecodeError:
-            raw_context = {}
-    context = raw_context if isinstance(raw_context, dict) else {}
+    context = _parse_artifact_context(artifact)
 
     # Skip derived/handler artifacts
     ctx_type = context.get("type") or ""
     if ctx_type in _SKIP_CONTEXT_TYPES:
         return json.dumps({"status": "skipped", "reason": f"source is {ctx_type}"})
 
-    content_type = str(context.get("content_type") or "").split(";", 1)[0].strip().lower()
+    content_type = get_artifact_content_type(artifact)
     if not _is_text_extractable(content_type):
         return json.dumps({"status": "skipped", "reason": "not_text_extractable", "content_type": content_type})
 
@@ -719,21 +726,52 @@ async def ingest_pipeline(
     if not extracted_text:
         return json.dumps({"status": "error", "step": "pdf_extract", "reason": "extracted text artifact is empty", "steps": steps})
 
-    # Step 3 — LLM metadata extraction
+    # Step 3 — LLM metadata extraction via Verso's invoke_llm
+    if not ASTRA_LLM_CONNECTION_ARTIFACT_ID:
+        steps.append({"step": "metadata_extract", "result": {"status": "skipped", "reason": "ASTRA_LLM_CONNECTION_ARTIFACT_ID not configured"}})
+        return json.dumps({"status": "partial", "artifact_id": artifact_id, "text_artifact_id": text_artifact_id, "reason": "LLM metadata extraction skipped", "steps": steps})
+
     truncated_text = extracted_text[:_MAX_LLM_TEXT_CHARS]
-    llm_input = f"{_METADATA_EXTRACTION_PROMPT}\n\n---\n\nDocument text:\n{truncated_text}"
+    llm_messages = [
+        {"role": "system", "content": _METADATA_EXTRACTION_PROMPT},
+        {"role": "user", "content": f"Document text:\n{truncated_text}"},
+    ]
 
     try:
         async with httpx.AsyncClient() as client:
             llm_resp = await client.post(
-                f"{AGIENCE_API_URI}/agents/invoke",
+                f"{AGIENCE_API_URI}/artifacts/verso/invoke",
                 headers=await _user_headers(),
-                json={"input": llm_input},
+                json={
+                    "name": "invoke_llm",
+                    "arguments": {
+                        "connection_artifact_id": ASTRA_LLM_CONNECTION_ARTIFACT_ID,
+                        "workspace_id": workspace_id,
+                        "messages": json.dumps(llm_messages),
+                    },
+                    "workspace_id": workspace_id,
+                },
                 timeout=120,
             )
         llm_resp.raise_for_status()
         llm_data = llm_resp.json()
-        llm_output = llm_data.get("output", "")
+        # verso.invoke_llm returns JSON-encoded {"text": ..., "provider": ..., ...}
+        # dispatched through the platform, so llm_data may wrap the MCP tool
+        # result in {"result": {"content": [{"type": "text", "text": "..."}]}}.
+        llm_output = ""
+        if isinstance(llm_data, dict):
+            result = llm_data.get("result") or llm_data
+            if isinstance(result, dict):
+                content_list = result.get("content")
+                if isinstance(content_list, list) and content_list:
+                    payload_text = content_list[0].get("text", "") if isinstance(content_list[0], dict) else ""
+                    try:
+                        payload = json.loads(payload_text) if payload_text else {}
+                    except json.JSONDecodeError:
+                        payload = {"text": payload_text}
+                    llm_output = payload.get("text") if isinstance(payload, dict) else ""
+                else:
+                    llm_output = result.get("text", "") if isinstance(result, dict) else ""
     except httpx.HTTPError as exc:
         steps.append({"step": "metadata_extract", "result": {"status": "error", "reason": str(exc)}})
         return json.dumps({"status": "partial", "artifact_id": artifact_id, "text_artifact_id": text_artifact_id, "reason": f"LLM metadata extraction failed: {exc}", "steps": steps})
@@ -835,12 +873,11 @@ async def deduplicate(
         async with httpx.AsyncClient() as client:
             search_resp = await client.post(
                 f"{AGIENCE_API_URI}/artifacts/search",
-                headers=await _headers(),
+                headers=await _user_headers(),
                 json={
-                    "query": content_hash,
+                    "query_text": content_hash,
                     "scope": [workspace_id],
-                    "filters": {"metadata.content_hash": content_hash},
-                    "limit": 5,
+                    "size": 5,
                 },
                 timeout=30,
             )
@@ -978,14 +1015,8 @@ def _should_chunk(text: str) -> bool:
     return len(encoder.encode(text)) > _CHUNK_SIZE
 
 
-def _parse_artifact_context(artifact: dict) -> dict:
-    raw = artifact.get("context") or {}
-    if isinstance(raw, str):
-        try:
-            raw = json.loads(raw)
-        except json.JSONDecodeError:
-            raw = {}
-    return raw if isinstance(raw, dict) else {}
+# Alias shared helper — all servers use the same context parsing.
+_parse_artifact_context = parse_artifact_context
 
 
 # ---------------------------------------------------------------------------
@@ -1223,8 +1254,8 @@ async def rotate_stream_key(
     """
     async with httpx.AsyncClient() as client:
         resp = await client.post(
-            f"{AGIENCE_API_URI}/workspaces/{workspace_id}/artifacts/{artifact_id}/key",
-            headers=await _headers(),
+            f"{AGIENCE_API_URI}/artifacts/{artifact_id}/key",
+            headers=await _user_headers(),
             params={"key_context": "stream"},
             timeout=15,
         )
@@ -1238,8 +1269,8 @@ async def rotate_stream_key(
         # it on future loads without knowing the platform's ingest URL.
         try:
             art_resp = await client.get(
-                f"{AGIENCE_API_URI}/workspaces/{workspace_id}/artifacts/{artifact_id}",
-                headers=await _headers(),
+                f"{AGIENCE_API_URI}/artifacts/{artifact_id}",
+                headers=await _user_headers(),
                 timeout=15,
             )
             if art_resp.status_code == 200:
@@ -1249,9 +1280,9 @@ async def rotate_stream_key(
                     ctx = json.loads(ctx)
                 stream_cfg = {**(ctx.get("stream") or {}), "server_url": STREAM_INGEST_URL}
                 await client.patch(
-                    f"{AGIENCE_API_URI}/workspaces/{workspace_id}/artifacts/{artifact_id}",
-                    headers=await _headers(),
-                    json={"context": {**ctx, "stream": stream_cfg}},
+                    f"{AGIENCE_API_URI}/artifacts/{artifact_id}",
+                    headers=await _user_headers(),
+                    json={"context": json.dumps({**ctx, "stream": stream_cfg})},
                     timeout=15,
                 )
         except Exception as exc:

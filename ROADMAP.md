@@ -49,10 +49,10 @@ This document tracks what's built, what's in progress, and what's coming next. N
 
 ### Agent architecture
 
-- **Unified `POST /agents/invoke`** — single endpoint for LLM dispatch, named task agents, and Transform artifact execution.
+- **Unified `POST /artifacts/{id}/invoke`** — single endpoint for LLM dispatch, named task agents, and Operator artifact execution. Agents, tools, and servers are all artifacts addressed by UUID.
 - **Transform artifacts** — `vnd.agience.transform+json` artifacts define agent workflows; invoke by `transform_id`.
 - **Chat artifact architecture** — "Ask anything" header creates a `vnd.agience.chat+json` artifact; auto-opens a floating `ChatWindow` card that runs an agentic loop (8-tool surface, max 8 iterations).
-- **Function agents** — Python callables in `backend/agents/`; merged params + injected `workspace_id`/`cards`.
+- **Function agents** — Python callables in `backend/agents/`; merged params + injected context (legacy, transitioning to handler-dispatched).
 
 ### File handling
 
@@ -111,7 +111,7 @@ The MVP demo loop requires an inbound → route → answer → outbound reply cy
 ### Control plane (Timer + Inbox)
 
 - [ ] **Timer artifacts** — `vnd.agience.timer+json` artifact type; schedule (one-shot / interval), enabled flag, target tool invocation spec, routing target.
-- [ ] **Scheduler loop** — backend service evaluates timers on tick; fires actions through the same `/agents/invoke` pathway; emits receipts.
+- [ ] **Scheduler loop** — backend service evaluates timers on tick; fires actions through the same `/artifacts/{id}/invoke` pathway; emits receipts.
 - [ ] **Inbox primitive** — `vnd.agience.inbox+json` artifact type with `new → triaged → resolved` state machine; links to evidence, drafts, and receipts.
 - [ ] **Approval gating** — Inbox items with `requires_approval: true` block external sends until a human approves; approval fires the action and records a receipt.
 - [ ] **Proactive triggers** — timers, inbound comms, and meeting events create Inbox items rather than auto-acting.

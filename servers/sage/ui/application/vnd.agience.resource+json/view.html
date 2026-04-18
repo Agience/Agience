@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Resource Viewer</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 16px; color: #1e293b; background: #fff; }
+    .header { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+    .icon { width: 20px; height: 20px; color: #10b981; }
+    h1 { font-size: 16px; font-weight: 600; }
+    .field { margin-bottom: 12px; }
+    .label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; margin-bottom: 4px; }
+    .value { font-size: 14px; color: #334155; }
+    .uri { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px; background: #f1f5f9; padding: 8px 12px; border-radius: 6px; word-break: break-all; }
+    .badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 9999px; background: #f0fdf4; color: #166534; font-weight: 500; }
+    .empty { color: #94a3b8; font-style: italic; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/></svg>
+    <h1 id="title">Resource</h1>
+  </div>
+  <div class="field">
+    <div class="label">URI</div>
+    <div class="uri" id="uri"></div>
+  </div>
+  <div class="field">
+    <div class="label">MIME Type</div>
+    <div class="value"><span class="badge" id="mime_type"></span></div>
+  </div>
+  <div class="field">
+    <div class="label">Description</div>
+    <div class="value" id="description"></div>
+  </div>
+  <div class="field" id="notes-field" style="display:none">
+    <div class="label">Notes</div>
+    <div class="value" id="notes"></div>
+  </div>
+
+  <script>
+    function render(artifact) {
+      let ctx = {};
+      try { ctx = typeof artifact.context === 'string' ? JSON.parse(artifact.context) : (artifact.context || {}); } catch {}
+      document.getElementById('title').textContent = ctx.description || ctx.uri || 'Resource';
+      document.getElementById('uri').textContent = ctx.uri || '';
+      document.getElementById('mime_type').textContent = ctx.mime_type || 'unknown';
+      document.getElementById('description').textContent = ctx.description || '';
+      if (ctx.notes) {
+        document.getElementById('notes-field').style.display = 'block';
+        document.getElementById('notes').textContent = ctx.notes;
+      }
+    }
+
+    // MCP Apps bridge
+    window.addEventListener('message', (e) => {
+      if (e.data?.type === 'artifact' && e.data.artifact) render(e.data.artifact);
+    });
+    if (window.parent !== window) {
+      window.parent.postMessage({ type: 'viewer-ready' }, '*');
+    }
+  </script>
+</body>
+</html>

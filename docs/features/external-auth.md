@@ -3,7 +3,7 @@
 Status: **Reference**
 Date: 2026-04-01
 
-Agience supports upstream authentication via external identity providers (OIDC) and optional email/password. Regardless of which IdP authenticates the user, Agience remains the authorization domain for workspace and collection access, MCP tool/resource scopes, share tokens, and audit identity claims.
+Agience supports upstream authentication via external identity providers (OIDC) and optional email/password. Regardless of which IdP authenticates the user, Agience remains the authorization domain for workspace and collection access, MCP tool/resource scopes, invite grants, and audit identity claims.
 
 Supported identity flows:
 - Google / Microsoft Entra / Auth0 / custom OIDC

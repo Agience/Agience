@@ -2,27 +2,21 @@
 Transform artifact definitions for the Agience multi-modal ingestion pipeline.
 
 Each entry is a dict describing one Transform artifact to create in the workspace.
-The "slug" field is used as a stable idempotency key — re-running install.py
+The ``slug`` field is used as a stable idempotency key — re-running install.py
 will update existing artifacts rather than creating duplicates.
 
-Swapping extractors
--------------------
-Users who have a third-party MCP server (e.g. a Docling server) can update
-the "pdf-text-extract" transform's run.server and run.tool to point at it.
-The server must return the same output shape as Astra's document_text_extract:
+Server references
+-----------------
+Transforms reference their target MCP server via a ``server`` relationship
+edge in the graph — NOT a field in artifact context. The ``server_name``
+field in each entry below tells the installer which MCP server artifact to
+link via an edge. The installer resolves ``server_name`` → UUID by looking
+up the server artifact in the platform servers collection, then creates a
+``relationship="server"`` edge from the transform to that server.
 
-    {
-        "status": "ok",
-        "source_artifact_id": str,
-        "text_artifact_id": str,
-        "title": str,
-        "length": int,
-        "pages": int,
-        "method": str,        # e.g. "docling"
-        "content_hash": str,
-        "images": [...],      # optional — populated by advanced extractors
-        "tables": [...]       # optional
-    }
+To swap the PDF extractor to a Docling or other server, update the
+relationship edge (or delete it and create a new one pointing to the
+registered third-party server artifact).
 """
 
 TRANSFORMS: list[dict] = [
@@ -31,6 +25,7 @@ TRANSFORMS: list[dict] = [
     # ------------------------------------------------------------------
     {
         "slug": "ingest-dedup",
+        "server_name": "astra",
         "context": {
             "content_type": "application/vnd.agience.transform+json",
             "title": "Deduplication Check",
@@ -41,7 +36,6 @@ TRANSFORMS: list[dict] = [
             "transform": {"kind": "ingest", "subtype": "dedup"},
             "run": {
                 "type": "mcp-tool",
-                "server": "astra",
                 "tool": "deduplicate",
                 "input_mapping": {
                     "workspace_id": "$.workspace_id",
@@ -60,23 +54,22 @@ TRANSFORMS: list[dict] = [
 
     # ------------------------------------------------------------------
     # Step 2 — PDF Text Extraction (built-in PyPDF)
-    # To use Docling or another advanced extractor, update run.server and
-    # run.tool to point at your registered third-party MCP server artifact.
+    # To use a different extractor, change the server_name to your
+    # registered third-party MCP server artifact name, and update run.tool.
     # ------------------------------------------------------------------
     {
         "slug": "ingest-pdf-extract",
+        "server_name": "astra",
         "context": {
             "content_type": "application/vnd.agience.transform+json",
             "title": "PDF Text Extraction",
             "description": (
                 "Extracts text from a PDF artifact using Astra's built-in PyPDF extractor "
-                "and creates a derived text/markdown artifact. "
-                "Swap run.server / run.tool to use a Docling or other third-party MCP server."
+                "and creates a derived text/markdown artifact."
             ),
             "transform": {"kind": "ingest", "subtype": "pdf-extract"},
             "run": {
                 "type": "mcp-tool",
-                "server": "astra",
                 "tool": "document_text_extract",
                 "input_mapping": {
                     "workspace_id": "$.workspace_id",
@@ -99,9 +92,11 @@ TRANSFORMS: list[dict] = [
     # ------------------------------------------------------------------
     # Step 3 — LLM Metadata Extraction
     # Uses the workspace LLM connection. Expects $.extracted_text in params.
+    # No server edge needed — dispatches via orchestrator (Verso).
     # ------------------------------------------------------------------
     {
         "slug": "ingest-extract-metadata",
+        "orchestrator_name": "verso",
         "context": {
             "content_type": "application/vnd.agience.transform+json",
             "title": "Document Metadata Extraction",
@@ -150,6 +145,7 @@ TRANSFORMS: list[dict] = [
     # ------------------------------------------------------------------
     {
         "slug": "ingest-apply-metadata",
+        "server_name": "astra",
         "context": {
             "content_type": "application/vnd.agience.transform+json",
             "title": "Apply Extracted Metadata",
@@ -160,7 +156,6 @@ TRANSFORMS: list[dict] = [
             "transform": {"kind": "ingest", "subtype": "metadata-apply"},
             "run": {
                 "type": "mcp-tool",
-                "server": "astra",
                 "tool": "apply_metadata",
                 "input_mapping": {
                     "workspace_id": "$.workspace_id",
@@ -187,6 +182,7 @@ TRANSFORMS: list[dict] = [
     # ------------------------------------------------------------------
     {
         "slug": "ingest-pipeline",
+        "server_name": "astra",
         "context": {
             "content_type": "application/vnd.agience.transform+json",
             "title": "Ingest Pipeline",
@@ -198,7 +194,6 @@ TRANSFORMS: list[dict] = [
             "transform": {"kind": "ingest", "subtype": "pipeline"},
             "run": {
                 "type": "mcp-tool",
-                "server": "astra",
                 "tool": "ingest_pipeline",
                 "input_mapping": {
                     "workspace_id": "$.workspace_id",

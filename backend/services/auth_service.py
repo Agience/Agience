@@ -171,9 +171,18 @@ def issue_delegation_token(server_client_id: str, user_id: str, ttl_seconds: int
     is set to ``"delegation"`` so endpoints can distinguish this from plain user or
     server tokens.
 
+    The token carries all four identity-chain entities:
+      - User (``sub``)
+      - Server (``act.sub`` / ``aud``)
+      - Authority (``iss``)
+      - Host (``host_id`` — resolved from platform topology)
+
     Signed with Core's RS256 key — servers verify it against Core's published JWKS.
     Only Core can issue delegation tokens.
     """
+    from services.platform_topology import get_id_optional
+    from services.bootstrap_types import HOST_ARTIFACT_SLUG
+
     now = datetime.now(timezone.utc)
     payload = {
         "iss": config.AUTHORITY_ISSUER,
@@ -183,6 +192,7 @@ def issue_delegation_token(server_client_id: str, user_id: str, ttl_seconds: int
         "aud": server_client_id,
         "act": {"sub": server_client_id},
         "principal_type": "delegation",
+        "host_id": get_id_optional(HOST_ARTIFACT_SLUG) or "",
         "iat": now.timestamp(),
         "exp": (now + timedelta(seconds=ttl_seconds)).timestamp(),
     }

@@ -43,6 +43,10 @@ export interface ArtifactResponse {
    * since membership is not tied to the committed state.)
    */
   committed_collection_ids?: string[];
+  /** True when at least one child artifact exists (via parent_id edge). */
+  has_children?: boolean;
+  /** Number of child artifacts, if available. */
+  child_count?: number;
 }
 
 export type Artifact = ArtifactResponse;

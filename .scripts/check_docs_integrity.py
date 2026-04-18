@@ -94,7 +94,7 @@ def has_status_banner(file_text: str) -> bool:
 
 def main() -> int:
     repo_root = repo_root_from_script()
-    sources_path = repo_root / ".dev" / "audits" / "sources.md"
+    sources_path = repo_root / ".dev" / "_audits" / "sources.md"
 
     problems: list[str] = []
 
@@ -102,7 +102,7 @@ def main() -> int:
     problems.extend(ensure_docs_roots(repo_root))
 
     if not sources_path.exists():
-        problems.append("MISSING_PUBLIC_SOURCES_INVENTORY: .dev/audits/sources.md")
+        problems.append("MISSING_PUBLIC_SOURCES_INVENTORY: .dev/_audits/sources.md")
         print("Docs integrity check: FAILED\n")
         for p in problems:
             print(p)

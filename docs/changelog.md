@@ -33,8 +33,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `extract_units` agent — LLM-based extraction of candidate artifacts from raw content
 - Operator artifacts (`vnd.agience.transform+json`) — reusable multi-step workflow definitions
-- Agent dispatch via unified `POST /agents/invoke` endpoint
-- WorkspaceEventHandler — event-driven automations triggered by artifact lifecycle events (`card_created`, `card_updated`, `card_deleted`)
+- Agent dispatch via unified `POST /artifacts/{id}/invoke` endpoint
+- WorkspaceEventHandler — event-driven automations triggered by artifact lifecycle events (`artifact_created`, `artifact_updated`, `artifact_deleted`)
 - Chat artifacts (`vnd.agience.chat+json`) — agentic multi-turn sessions with full tool-call history
 
 **Ingestion**
@@ -80,7 +80,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - RS256 JWT tokens with JWKS endpoint (`/.well-known/jwks.json`)
 - Scoped API keys — `resource|tool|prompt : mime : action` format
 - Server credential `client_credentials` grant for MCP server identity
-- Collection grants (read / write / admin) for shared knowledge access
+- Collection grants (CRUDEASIO 9-flag model) for shared knowledge access
 - Allowed-email / allowed-domain / allowed-ID access control
 
 **Deployment**
@@ -96,6 +96,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Type blindness in Core** — no MIME constants, no `artifact.context` parsing in Core services or Presentation components
 - **Registry-driven viewer dispatch** — all type-specific viewer wiring flows through `frontend/src/registry/`; Presentation never imports handler code directly
 - **MCP Apps pattern** — content type viewers served as `ui://` resources from MCP servers and rendered in the frontend's iframe sandbox (`McpAppHost.tsx`)
-- **Dual-context entity design** — entities have separate `to_dict_workspace()` and `to_dict_collection()` serialization paths; the two DB contexts are never mixed
+- **Unified entity design** — all artifacts use a single `Artifact` entity with one `to_dict()` method. `Collection` is an alias for `Artifact`. Container artifacts are distinguished by `content_type`.
 - **Fractional indexing** — workspace artifact ordering uses lexicographic base-62 keys to avoid renumbering on reorder
 - **Artifact reference model** — cross-artifact references are always a single `artifact_id` string (UUID); no embedded content, no workspace-scoped references

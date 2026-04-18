@@ -60,7 +60,6 @@ def test_resolve_auth_accepts_direct_api_key():
 
     mock_grants = [
         GrantEntity(
-            resource_type="collection",
             resource_id="col-1",
             grantee_type="api_key",
             grantee_id="key-123",
@@ -98,7 +97,6 @@ def test_resolve_auth_accepts_grant_key_in_bearer():
     """Grant keys in the Bearer slot return principal_type=grant_key."""
     grant = GrantEntity(
         id="grant-1",
-        resource_type="collection",
         resource_id="col-1",
         grantee_type="grant_key",
         grantee_id="hash-1",
@@ -153,3 +151,84 @@ def test_resolve_auth_missing_token_raises_401():
         resolve_auth(token="", arango_db=MagicMock())
 
     assert exc_info.value.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Delegation tokens — all four identity-chain entities required
+# ---------------------------------------------------------------------------
+
+def _delegation_payload(**overrides):
+    """Base valid delegation JWT claims."""
+    base = {
+        "sub": "user-42",
+        "aud": "agience-server-astra",
+        "iss": AUTHORITY_ISSUER,
+        "act": {"sub": "agience-server-astra"},
+        "principal_type": "delegation",
+        "host_id": "host-abc",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_resolve_auth_delegation_all_entities():
+    """Delegation tokens with all four entities produce a valid AuthContext."""
+    with patch("services.dependencies.verify_token", return_value=_delegation_payload()):
+        ctx = resolve_auth(token="delegation-jwt", arango_db=MagicMock())
+
+    assert ctx.principal_type == "user"
+    assert ctx.user_id == "user-42"
+    assert ctx.actor == "agience-server-astra"
+    assert ctx.authority == AUTHORITY_ISSUER
+    assert ctx.host_id == "host-abc"
+
+
+def test_resolve_auth_delegation_missing_sub():
+    """Delegation tokens without sub (user) are rejected."""
+    payload = _delegation_payload(sub="")
+    with patch("services.dependencies.verify_token", return_value=payload):
+        with pytest.raises(HTTPException) as exc_info:
+            resolve_auth(token="delegation-jwt", arango_db=MagicMock())
+    assert exc_info.value.status_code == 401
+    assert "sub" in exc_info.value.detail
+
+
+def test_resolve_auth_delegation_missing_act_sub():
+    """Delegation tokens without act.sub (server) are rejected."""
+    payload = _delegation_payload(act={})
+    with patch("services.dependencies.verify_token", return_value=payload):
+        with pytest.raises(HTTPException) as exc_info:
+            resolve_auth(token="delegation-jwt", arango_db=MagicMock())
+    assert exc_info.value.status_code == 401
+    assert "act.sub" in exc_info.value.detail
+
+
+def test_resolve_auth_delegation_missing_act_entirely():
+    """Delegation tokens without act claim at all are rejected."""
+    payload = _delegation_payload()
+    del payload["act"]
+    with patch("services.dependencies.verify_token", return_value=payload):
+        with pytest.raises(HTTPException) as exc_info:
+            resolve_auth(token="delegation-jwt", arango_db=MagicMock())
+    assert exc_info.value.status_code == 401
+    assert "act.sub" in exc_info.value.detail
+
+
+def test_resolve_auth_delegation_missing_host_id():
+    """Delegation tokens without host_id are rejected."""
+    payload = _delegation_payload(host_id="")
+    with patch("services.dependencies.verify_token", return_value=payload):
+        with pytest.raises(HTTPException) as exc_info:
+            resolve_auth(token="delegation-jwt", arango_db=MagicMock())
+    assert exc_info.value.status_code == 401
+    assert "host_id" in exc_info.value.detail
+
+
+def test_resolve_auth_delegation_missing_aud():
+    """Delegation tokens without aud are rejected (via _validate_aud_for_principal)."""
+    payload = _delegation_payload(aud="")
+    with patch("services.dependencies.verify_token", return_value=payload):
+        with pytest.raises(HTTPException) as exc_info:
+            resolve_auth(token="delegation-jwt", arango_db=MagicMock())
+    assert exc_info.value.status_code == 401
+    assert "aud" in exc_info.value.detail.lower()

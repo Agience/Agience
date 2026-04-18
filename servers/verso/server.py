@@ -132,6 +132,9 @@ mcp = FastMCP(
     ),
 )
 
+from artifact_helpers import register_types_manifest
+register_types_manifest(mcp, "verso", __file__)
+
 
 # ---------------------------------------------------------------------------
 # Tool: synthesize
@@ -157,22 +160,14 @@ async def synthesize(
         workspace_id: Optional workspace for scoping.
         model: LLM model to use for synthesis.
     """
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{AGIENCE_API_URI}/agents/invoke",
-            headers=await _headers(),
-            json={
-                "agent": "verso:synthesize",
-                "input": input,
-                "params": {"model": model},
-                "workspace_id": workspace_id,
-                "cards": artifact_ids or [],
-            },
-            timeout=60,
-        )
-    if resp.status_code >= 400:
-        return f"Error: {resp.status_code} � {resp.text[:300]}"
-    return json.dumps(resp.json(), indent=2)
+    # TODO(agents-invoke-removal): the former implementation dispatched to a
+    # backend agent plugin "verso:synthesize" via /agents/invoke, but no such
+    # plugin exists and inlining would recurse into this tool. Callers that
+    # need LLM synthesis should invoke `invoke_llm` directly with a prepared
+    # connection artifact and messages. Leaving this stub for manual design
+    # review.
+    _ = (input, artifact_ids, workspace_id, model)  # unused — kept for stable tool signature
+    return json.dumps({"error": "synthesize is not yet implemented"})
 
 
 # ---------------------------------------------------------------------------
@@ -274,14 +269,19 @@ async def _dispatch_child_transform(
     transform_id: str,
     extra_params: dict[str, Any],
 ) -> dict:
-    """Invoke a child Transform via POST /agents/invoke."""
+    """Invoke a child Transform via POST /artifacts/{id}/invoke.
+
+    This is the canonical artifact-invoke path. The operation_dispatcher
+    reads the transform's type.json, enforces grants, and routes to the
+    right handler (direct MCP tool for run.type=mcp-tool, or back to
+    verso:execute_transform for workflow/llm/transform-ref types).
+    """
     body: dict[str, Any] = {
-        "transform_id": transform_id,
         "workspace_id": workspace_id,
-        "params": extra_params,
+        "params": extra_params or {},
     }
     resp = await client.post(
-        f"{AGIENCE_API_URI}/agents/invoke",
+        f"{AGIENCE_API_URI}/artifacts/{transform_id}/invoke",
         headers=await _headers(),
         json=body,
         timeout=300,  # pipeline steps can be long-running
@@ -610,9 +610,31 @@ async def execute_transform(
 
     run_type = run.get("type")
 
-    # --- mcp-tool: call an MCP tool via /agents/invoke ---
+    # --- mcp-tool: call an MCP tool on a named server ---
     if run_type == "mcp-tool":
-        server = run.get("server_artifact_id") or run.get("server") or "agience-core"
+        # Resolve server via relationship edge
+        server = None
+        async with httpx.AsyncClient() as client:
+            try:
+                rel_resp = await client.get(
+                    f"{AGIENCE_API_URI}/artifacts/{transform_id}/relationships",
+                    headers=await _headers(),
+                    params={"relationship": "server"},
+                    timeout=30,
+                )
+                rel_resp.raise_for_status()
+                rels = rel_resp.json()
+                if rels:
+                    server = rels[0].get("target_id")
+            except httpx.HTTPStatusError:
+                pass
+
+        # Legacy fallback for pre-migration artifacts
+        if not server:
+            server = run.get("server_artifact_id")
+        if not server:
+            return json.dumps({"error": "Transform has no server relationship edge"})
+
         tool = run.get("tool")
         if not tool:
             return json.dumps({"error": "Transform run block is missing 'tool'"})
@@ -620,20 +642,17 @@ async def execute_transform(
         input_mapping = run.get("input_mapping") or {}
         tool_args = _resolve_input_mapping(input_mapping, invoke_params)
 
-        # Dispatch via platform /agents/invoke (which routes to mcp_service.invoke_tool)
+        # Dispatch via the artifact-native invoke path
+        # (POST /artifacts/{server}/invoke with {name, arguments, workspace_id}).
         async with httpx.AsyncClient() as client:
             try:
                 resp = await client.post(
-                    f"{AGIENCE_API_URI}/agents/invoke",
+                    f"{AGIENCE_API_URI}/artifacts/{server}/invoke",
                     headers=await _headers(),
                     json={
+                        "name": tool,
+                        "arguments": tool_args,
                         "workspace_id": workspace_id,
-                        "params": {
-                            "server_artifact_id": server,
-                            "tool_name": tool,
-                            "arguments": tool_args,
-                        },
-                        "agent": "_invoke_mcp_tool",
                     },
                     timeout=120,
                 )
@@ -672,11 +691,42 @@ async def execute_transform(
             params=json.dumps(workflow_params) if workflow_params else None,
         )
 
+    # --- llm: delegate to invoke_llm (same server, sister tool) ---
     elif run_type == "llm":
-        return json.dumps({"error": "Transform run type 'llm' is not yet implemented"})
+        connection = run.get("connection_artifact_id") or run.get("connection")
+        if not connection:
+            return json.dumps({"error": "LLM run block is missing 'connection_artifact_id'"})
+
+        prompt_template = run.get("prompt") or run.get("system_prompt") or ""
+        user_input = invoke_params.get("input", "")
+        input_mapping = run.get("input_mapping") or {}
+        mapped = _resolve_input_mapping(input_mapping, invoke_params)
+
+        try:
+            prompt = prompt_template.format(**mapped) if mapped else prompt_template
+        except (KeyError, IndexError):
+            # Template referenced a key we don't have; send it as-is rather
+            # than failing --- the LLM may still handle placeholders gracefully.
+            prompt = prompt_template
+
+        messages: list[dict] = []
+        if prompt:
+            messages.append({"role": "system", "content": prompt})
+        if user_input:
+            messages.append({"role": "user", "content": user_input})
+        elif not prompt:
+            messages.append({"role": "user", "content": json.dumps(mapped)})
+
+        return await invoke_llm(
+            connection_artifact_id=connection,
+            workspace_id=workspace_id or "",
+            messages=json.dumps(messages),
+            temperature=float(run.get("temperature", 0.7)),
+            max_output_tokens=int(run.get("max_output_tokens", 2048)),
+        )
 
     elif run_type == "webhook":
-        return json.dumps({"error": "Transform run type 'webhook' is not yet implemented"})
+        return json.dumps({"error": "Transform run type 'webhook' is not yet implemented \u2014 spec not finalized"})
 
     else:
         return json.dumps({"error": f"Unknown Transform run type: {run_type!r}"})
@@ -854,27 +904,25 @@ async def transcribe_artifact(
     aws_region = os.getenv("AWS_TRANSCRIBE_AWS_REGION", "us-east-1")
 
     if credential_artifact_id:
-        # Call Seraph via Core's /agents/invoke to decrypt AWS credentials.
+        # Call Seraph's provide_aws_credentials tool via the artifact-native
+        # invoke path (POST /artifacts/seraph/invoke).
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 seraph_resp = await client.post(
-                    f"{AGIENCE_API_URI}/agents/invoke",
+                    f"{AGIENCE_API_URI}/artifacts/seraph/invoke",
                     headers=await _headers(),
                     json={
-                        "agent": "mcp_tool",
-                        "params": {
-                            "server_artifact_id": "seraph",
-                            "tool_name": "provide_aws_credentials",
-                            "arguments": {
-                                "credential_artifact_id": credential_artifact_id,
-                                "workspace_id": workspace_id,
-                            },
+                        "name": "provide_aws_credentials",
+                        "arguments": {
+                            "credential_artifact_id": credential_artifact_id,
+                            "workspace_id": workspace_id,
                         },
+                        "workspace_id": workspace_id,
                     },
                 )
             if seraph_resp.status_code == 200:
                 resp_data = seraph_resp.json()
-                # agents/invoke returns the tool result directly
+                # Platform invoke returns the MCP tool result directly
                 result = resp_data.get("result") or resp_data
                 content_list = result.get("content") if isinstance(result, dict) else []
                 if isinstance(content_list, list) and content_list:
@@ -1239,21 +1287,19 @@ async def invoke_llm(
             env_key = _PROVIDER_ENV_KEYS.get(provider)
             api_key = os.getenv(env_key) if env_key else None
         else:
-            # Delegate to Seraph for secret resolution.
-            # User identity is carried by the delegation JWT at transport level.
+            # Delegate to Seraph for secret resolution via the artifact-native
+            # invoke path. User identity is carried by the delegation JWT at
+            # transport level.
             try:
                 seraph_resp = await client.post(
-                    f"{AGIENCE_API_URI}/agents/invoke",
+                    f"{AGIENCE_API_URI}/artifacts/seraph/invoke",
                     headers=await _user_headers(),
                     json={
-                        "agent": "mcp_tool",
-                        "params": {
-                            "server_artifact_id": "seraph",
-                            "tool_name": "resolve_llm_credentials",
-                            "arguments": {
-                                "credentials_ref": json.dumps(creds_ref),
-                            },
+                        "name": "resolve_llm_credentials",
+                        "arguments": {
+                            "credentials_ref": json.dumps(creds_ref),
                         },
+                        "workspace_id": workspace_id,
                     },
                     timeout=15,
                 )
@@ -1276,19 +1322,20 @@ async def invoke_llm(
         if not api_key:
             return json.dumps({"error": f"No API key available for provider '{provider}'. Add your own key or configure platform defaults."})
 
-        # 4. Check rate limits via Ophan
+        # 4. Check rate limits via Ophan (artifact-native invoke)
         tier = ctx.get("tier", "free")
         try:
             ophan_check = await client.post(
-                f"{AGIENCE_API_URI}/agents/invoke",
+                f"{AGIENCE_API_URI}/artifacts/ophan/invoke",
                 headers=await _headers(),
                 json={
-                    "agent": "ophan:check_llm_allowance",
-                    "params": {
+                    "name": "check_llm_allowance",
+                    "arguments": {
                         "user_id": _get_delegation_user_id(),
                         "tier": tier,
                         "estimated_tokens": max_output_tokens,
                     },
+                    "workspace_id": workspace_id,
                 },
                 timeout=10,
             )
@@ -1325,14 +1372,14 @@ async def invoke_llm(
         text = _extract_text(provider, raw_response)
         usage = _extract_token_usage(provider, raw_response)
 
-        # 7. Record usage via Ophan
+        # 7. Record usage via Ophan (artifact-native invoke)
         try:
             await client.post(
-                f"{AGIENCE_API_URI}/agents/invoke",
+                f"{AGIENCE_API_URI}/artifacts/ophan/invoke",
                 headers=await _headers(),
                 json={
-                    "agent": "ophan:record_llm_usage",
-                    "params": {
+                    "name": "record_llm_usage",
+                    "arguments": {
                         "user_id": _get_delegation_user_id(),
                         "provider": provider,
                         "model": model,
@@ -1340,6 +1387,7 @@ async def invoke_llm(
                         "output_tokens": usage.get("output_tokens", 0),
                         "workspace_id": workspace_id,
                     },
+                    "workspace_id": workspace_id,
                 },
                 timeout=10,
             )
@@ -1387,6 +1435,453 @@ async def list_llm_defaults() -> str:
         }, indent=2)
     except Exception as exc:
         return json.dumps({"error": f"Failed to read type definition: {exc}"})
+
+
+# ---------------------------------------------------------------------------
+# Tool: install_package
+# ---------------------------------------------------------------------------
+
+@mcp.tool(
+    description=(
+        "Install a package into a target workspace. "
+        "Reads the package manifest, resolves MCP server dependencies "
+        "(creating missing server artifacts), copies content artifacts "
+        "into the workspace, and rewrites package-scoped references to "
+        "local IDs. Dispatched from the package type's invoke operation."
+    )
+)
+async def install_package(
+    transform_id: str,
+    workspace_id: Optional[str] = None,
+    target_workspace_id: Optional[str] = None,
+    dry_run: bool = False,
+) -> str:
+    """Install the package artifact ``transform_id`` into ``target_workspace_id``.
+
+    ``transform_id`` is the package manifest artifact ID (named that way
+    because it's what the operation dispatcher injects as the invoke
+    subject). ``target_workspace_id`` defaults to ``workspace_id`` if
+    omitted.
+    """
+    target_ws = target_workspace_id or workspace_id
+    if not target_ws:
+        return json.dumps({"error": "target_workspace_id (or workspace_id) required"})
+
+    async with httpx.AsyncClient() as client:
+        # 1. Fetch the package manifest.
+        pkg = await _get_artifact(client, workspace_id or target_ws, transform_id)
+        pkg_ctx = pkg.get("context") or {}
+        if isinstance(pkg_ctx, str):
+            try:
+                pkg_ctx = json.loads(pkg_ctx)
+            except json.JSONDecodeError:
+                return json.dumps({"error": "Package context is not valid JSON"})
+
+        pkg_block = pkg_ctx.get("package") or {}
+        if not pkg_block:
+            return json.dumps({"error": "Artifact is not a package (missing context.package)"})
+
+        pkg_id = pkg_block.get("id") or "unknown"
+        pkg_version = pkg_block.get("version") or "0.0.0"
+        contents = pkg_block.get("contents") or []
+        deps = (pkg_block.get("dependencies") or {}).get("servers") or []
+        linking = (pkg_block.get("install") or {}).get("linking") or []
+
+        plan: dict[str, Any] = {
+            "package_id": pkg_id,
+            "package_version": pkg_version,
+            "target_workspace_id": target_ws,
+            "servers": {"existing": [], "would_create": [], "created": []},
+            "artifacts": {"ref_map": {}, "created": []},
+            "rewrites_applied": 0,
+        }
+
+        # 2. Resolve server dependencies. Check each required server and
+        #    record whether we'd create it or it already exists.
+        existing_servers = await _list_workspace_servers(client, target_ws)
+        existing_by_name = {s.get("name"): s for s in existing_servers if s.get("name")}
+
+        for dep in deps:
+            name = dep.get("name")
+            if not name:
+                continue
+            if name in existing_by_name:
+                plan["servers"]["existing"].append(name)
+                continue
+            if dry_run:
+                plan["servers"]["would_create"].append(name)
+                continue
+            try:
+                created = await _create_server_artifact(client, target_ws, dep)
+                plan["servers"]["created"].append({
+                    "name": name,
+                    "artifact_id": created.get("id"),
+                })
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Failed to create server dependency %s: %s", name, exc)
+                plan["servers"]["created"].append({"name": name, "error": str(exc)})
+
+        # 3. Copy content artifacts into the target workspace, building a
+        #    ref_map from package-scoped ref -> new local artifact_id.
+        ref_map: dict[str, str] = {}
+        for entry in contents:
+            ref = entry.get("artifact_ref")
+            src_id = entry.get("artifact_id")
+            if not ref or not src_id:
+                continue
+            if dry_run:
+                ref_map[ref] = f"<pending:{src_id}>"
+                continue
+            try:
+                new_id = await _copy_artifact_to_workspace(
+                    client, src_id, target_ws, role=entry.get("role"),
+                )
+                ref_map[ref] = new_id
+                plan["artifacts"]["created"].append({
+                    "ref": ref, "role": entry.get("role"), "artifact_id": new_id,
+                })
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Failed to copy artifact %s: %s", src_id, exc)
+                plan["artifacts"]["created"].append({
+                    "ref": ref, "role": entry.get("role"), "error": str(exc),
+                })
+
+        plan["artifacts"]["ref_map"] = ref_map
+
+        # 4. Apply link rewriting so imported artifacts reference each other
+        #    by new local ID rather than package-scoped URI.
+        if not dry_run:
+            for rule in linking:
+                from_ref = rule.get("from_ref")
+                if from_ref not in ref_map:
+                    continue
+                new_id = ref_map[from_ref]
+                rewrites = rule.get("rewrite") or []
+                for r in rewrites:
+                    path = r.get("path")
+                    value_template = r.get("value") or ""
+                    # Single supported pattern: ${workspace_artifact_id(<ref>)}
+                    # resolves to the freshly-copied artifact ID for that ref.
+                    resolved = _resolve_rewrite_value(value_template, ref_map)
+                    if path and resolved is not None:
+                        try:
+                            await _patch_artifact_path(
+                                client, target_ws, new_id, path, resolved,
+                            )
+                            plan["rewrites_applied"] += 1
+                        except Exception as exc:  # noqa: BLE001
+                            log.warning(
+                                "Rewrite failed (%s.%s): %s", new_id, path, exc,
+                            )
+
+        plan["status"] = "dry_run" if dry_run else "installed"
+        return json.dumps(plan, indent=2)
+
+
+async def _list_workspace_servers(
+    client: httpx.AsyncClient, workspace_id: str,
+) -> list[dict]:
+    """List MCP server artifacts already in the target workspace."""
+    try:
+        resp = await client.get(
+            f"{AGIENCE_API_URI}/workspaces/{workspace_id}/artifacts",
+            headers=await _headers(),
+            params={"content_type": "application/vnd.agience.mcp-server+json"},
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+        artifacts = data if isinstance(data, list) else data.get("artifacts", [])
+        out: list[dict] = []
+        for a in artifacts:
+            ctx = a.get("context") or {}
+            if isinstance(ctx, str):
+                try:
+                    ctx = json.loads(ctx)
+                except json.JSONDecodeError:
+                    ctx = {}
+            out.append({"id": a.get("id"), "name": ctx.get("name"), "context": ctx})
+        return out
+    except Exception:
+        return []
+
+
+async def _create_server_artifact(
+    client: httpx.AsyncClient, workspace_id: str, dep: dict,
+) -> dict:
+    """Create a vnd.agience.mcp-server+json artifact from a package dep entry."""
+    ctx = {
+        "name": dep.get("name"),
+        "transport": dep.get("transport", "http"),
+    }
+    if dep.get("endpoint"):
+        ctx["endpoint"] = dep["endpoint"]
+    if dep.get("repo_url"):
+        ctx["repo_url"] = dep["repo_url"]
+    payload = {
+        "content_type": "application/vnd.agience.mcp-server+json",
+        "context": ctx,
+        "workspace_id": workspace_id,
+    }
+    resp = await client.post(
+        f"{AGIENCE_API_URI}/artifacts",
+        headers=await _headers(),
+        json=payload,
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+async def _copy_artifact_to_workspace(
+    client: httpx.AsyncClient,
+    source_id: str,
+    target_workspace_id: str,
+    role: Optional[str] = None,
+) -> str:
+    """Copy a source artifact's content + context into a new artifact in the target workspace.
+
+    Returns the new artifact ID. Adds ``package_role`` to the copy's
+    context for traceability.
+    """
+    # Fetch via collection-batch so we can read from either workspace or
+    # published collection.
+    batch = await client.post(
+        f"{AGIENCE_API_URI}/collections/artifacts/batch",
+        headers=await _headers(),
+        json={"root_ids": [source_id]},
+        timeout=30,
+    )
+    batch.raise_for_status()
+    results = batch.json()
+    if not isinstance(results, list) or not results:
+        raise ValueError(f"Source artifact {source_id} not found")
+    source = results[0]
+
+    ctx = source.get("context") or {}
+    if isinstance(ctx, str):
+        try:
+            ctx = json.loads(ctx)
+        except json.JSONDecodeError:
+            ctx = {}
+    if role:
+        ctx["package_role"] = role
+
+    payload = {
+        "content_type": source.get("content_type"),
+        "context": ctx,
+        "content": source.get("content") or "",
+        "workspace_id": target_workspace_id,
+    }
+    resp = await client.post(
+        f"{AGIENCE_API_URI}/artifacts",
+        headers=await _headers(),
+        json=payload,
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json().get("id")
+
+
+def _resolve_rewrite_value(template: str, ref_map: dict[str, str]) -> Optional[str]:
+    """Resolve ``${workspace_artifact_id(<ref>)}`` tokens in a rewrite value.
+
+    Returns None if the template references a ref that's not in ref_map.
+    """
+    import re
+    match = re.match(
+        r"^\$\{workspace_artifact_id\(([^)]+)\)\}$", template.strip(),
+    )
+    if not match:
+        # Literal value; passthrough.
+        return template
+    ref = match.group(1).strip().strip("'\"")
+    return ref_map.get(ref)
+
+
+async def _patch_artifact_path(
+    client: httpx.AsyncClient,
+    workspace_id: str,
+    artifact_id: str,
+    path: str,
+    value: Any,
+) -> None:
+    """Set a dotted path inside an artifact's context to *value* (PATCH merge)."""
+    artifact = await _get_artifact(client, workspace_id, artifact_id)
+    ctx = artifact.get("context") or {}
+    if isinstance(ctx, str):
+        try:
+            ctx = json.loads(ctx)
+        except json.JSONDecodeError:
+            ctx = {}
+
+    # Walk the dotted path, creating dicts as needed.
+    parts = path.split(".")
+    node: dict = ctx
+    for key in parts[:-1]:
+        if not isinstance(node.get(key), dict):
+            node[key] = {}
+        node = node[key]
+    node[parts[-1]] = value
+
+    await client.patch(
+        f"{AGIENCE_API_URI}/workspaces/{workspace_id}/artifacts/{artifact_id}",
+        headers=await _headers(),
+        json={"context": ctx},
+        timeout=30,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tool: export_package
+# ---------------------------------------------------------------------------
+
+@mcp.tool(
+    description=(
+        "Populate a package manifest from workspace contents. "
+        "Walks the named workspace (or subset by artifact_ids), generates "
+        "stable package-scoped references, and updates the package artifact's "
+        "context.package.contents + dependencies.servers. Dispatched from "
+        "the package type's export operation."
+    )
+)
+async def export_package(
+    transform_id: str,
+    workspace_id: Optional[str] = None,
+    artifact_ids: Optional[list[str]] = None,
+) -> str:
+    """Populate package ``transform_id`` with contents from ``workspace_id``.
+
+    Only inspects draft + committed artifacts in the workspace; archived
+    artifacts are skipped. Server dependencies are inferred from each
+    transform artifact's ``server`` relationship edge.
+    """
+    ws = workspace_id
+    if not ws:
+        return json.dumps({"error": "workspace_id required"})
+
+    async with httpx.AsyncClient() as client:
+        # 1. Read the package manifest.
+        pkg = await _get_artifact(client, ws, transform_id)
+        pkg_ctx = pkg.get("context") or {}
+        if isinstance(pkg_ctx, str):
+            try:
+                pkg_ctx = json.loads(pkg_ctx)
+            except json.JSONDecodeError:
+                return json.dumps({"error": "Package context is not valid JSON"})
+        pkg_block = pkg_ctx.get("package") or {}
+        pkg_id = pkg_block.get("id")
+        if not pkg_id:
+            return json.dumps({"error": "Package is missing context.package.id"})
+
+        # 2. List workspace artifacts (filtered if artifact_ids given).
+        artifacts = await _list_workspace_artifacts(client, ws)
+        if artifact_ids:
+            wanted = set(artifact_ids)
+            artifacts = [a for a in artifacts if a.get("id") in wanted]
+
+        # 3. Build contents[] and dependencies.servers[].
+        contents: list[dict[str, Any]] = []
+        server_names: set[str] = set()
+
+        for a in artifacts:
+            aid = a.get("id")
+            ctype = a.get("content_type") or ""
+            if ctype == "application/vnd.agience.package+json":
+                continue  # don't include the package itself in its own contents
+            ctx = a.get("context") or {}
+            if isinstance(ctx, str):
+                try:
+                    ctx = json.loads(ctx)
+                except json.JSONDecodeError:
+                    ctx = {}
+
+            role = _infer_package_role(ctype, ctx)
+            slug = ctx.get("slug") or (ctx.get("title") or aid).lower().replace(" ", "-")
+            contents.append({
+                "artifact_ref": f"agience://packages/{pkg_id}/{role}/{slug}",
+                "artifact_id": aid,
+                "role": role,
+                "content_type": ctype,
+                "slug": slug,
+            })
+
+            # Harvest server dependencies via relationship edges.
+            if ctype == "application/vnd.agience.transform+json":
+                try:
+                    rel_resp = await client.get(
+                        f"{AGIENCE_API_URI}/artifacts/{aid}/relationships",
+                        headers=await _headers(),
+                        params={"relationship": "server"},
+                        timeout=30,
+                    )
+                    rel_resp.raise_for_status()
+                    for rel in rel_resp.json():
+                        tid = rel.get("target_id")
+                        if tid:
+                            server_names.add(tid)
+                except httpx.HTTPStatusError:
+                    pass
+
+        # 4. Merge into the existing package context (preserve publisher,
+        #    version, etc. that the author set manually).
+        pkg_block["contents"] = contents
+        deps = pkg_block.setdefault("dependencies", {})
+        existing_deps = deps.get("servers") or []
+        existing_ids = {d.get("artifact_id") for d in existing_deps if d.get("artifact_id")}
+        for server_id in sorted(server_names):
+            if server_id not in existing_ids:
+                existing_deps.append({"artifact_id": server_id})
+        deps["servers"] = existing_deps
+
+        pkg_ctx["package"] = pkg_block
+
+        # 5. Write back to the package artifact.
+        await client.patch(
+            f"{AGIENCE_API_URI}/workspaces/{ws}/artifacts/{transform_id}",
+            headers=await _headers(),
+            json={"context": pkg_ctx},
+            timeout=30,
+        )
+
+        return json.dumps({
+            "status": "exported",
+            "package_id": pkg_id,
+            "contents_count": len(contents),
+            "server_deps_count": len(existing_deps),
+        }, indent=2)
+
+
+async def _list_workspace_artifacts(
+    client: httpx.AsyncClient, workspace_id: str,
+) -> list[dict]:
+    resp = await client.get(
+        f"{AGIENCE_API_URI}/workspaces/{workspace_id}/artifacts",
+        headers=await _headers(),
+        timeout=30,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    return data if isinstance(data, list) else data.get("artifacts", [])
+
+
+def _infer_package_role(content_type: str, context: dict) -> str:
+    """Infer a package role string from content type + context."""
+    if content_type == "application/vnd.agience.transform+json":
+        return "transform"
+    if content_type == "application/vnd.agience.mcp-server+json":
+        return "server"
+    if content_type == "application/vnd.agience.prompts+json":
+        return "prompt"
+    if content_type.startswith("text/markdown"):
+        return "docs"
+    ctx_type = context.get("type")
+    if ctx_type == "prompt":
+        return "prompt"
+    if ctx_type == "docs":
+        return "docs"
+    return "artifact"
 
 
 # ---------------------------------------------------------------------------

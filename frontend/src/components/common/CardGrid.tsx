@@ -50,7 +50,7 @@ interface CardGridProps {
   inPanel?: boolean;
   fillHeight?: boolean; // NEW: control whether grid fills available height
   isSelected?: (id: string) => boolean;
-  activeSource?: { type: 'workspace' | 'collection' | 'mcp-server'; id: string } | null;
+  activeSource?: { type: string; id: string } | null;
   isShowingSearchResults?: boolean;
   onArtifactMouseDown?: (id: string, e: React.MouseEvent) => void;
   onOpenArtifact?: (artifact: Artifact) => void;

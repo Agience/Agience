@@ -56,9 +56,10 @@ $BuildInfo = Get-Content build_info.json -Raw | ConvertFrom-Json
 if ($BuildInfo.version -ne $Version) {
     Write-Host "  Bumping build_info.json to $Version..." -ForegroundColor Cyan
     $newBuildInfo = @{ version = $Version } | ConvertTo-Json
+    $newBuildInfo = $newBuildInfo -replace "`r`n", "`n"
     [System.IO.File]::WriteAllText("build_info.json", $newBuildInfo, $Utf8NoBom)
-    git add build_info.json 2>&1 | Out-Null
-    git commit -m "Bump version to $Version" --quiet 2>&1 | Out-Null
+    git add build_info.json > $null 2>$null
+    git commit -m "Bump version to $Version" --quiet > $null 2>$null
     if ($LASTEXITCODE -ne 0) {
         Write-Host "ERROR: Failed to commit version bump." -ForegroundColor Red
         exit 1

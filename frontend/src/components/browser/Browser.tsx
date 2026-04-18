@@ -134,7 +134,8 @@ export default function Browser({
   const { user } = useAuth();
   // The Inbox workspace has the same ID as the current user (backend convention)
   const inboxWorkspaceId = user?.id ?? null;
-  const workspaceId = activeWorkspace?.id || "";
+  // Use activeWorkspace ID, or fall back to inboxWorkspaceId if viewing a workspace, or empty string
+  const workspaceId = activeWorkspace?.id || (activeSource?.type === 'workspace' ? inboxWorkspaceId : "") || "";
   const [editArtifact, setEditArtifact] = useState<ArtifactCreate | ArtifactUpdate | null>(null);
   const [isArtifactTypePickerOpen, setIsArtifactTypePickerOpen] = useState(false);
   const [sourceArtifacts, setSourceArtifacts] = useState<Artifact[]>([]); // For collection/MCP artifacts
@@ -803,20 +804,25 @@ export default function Browser({
     [preferences.browser]
   );
 
-  const hiddenWorkspaceTabIdsPref = useMemo(() => {
-    const raw = (browserPrefs as { hiddenWorkspaceTabIds?: unknown }).hiddenWorkspaceTabIds;
-    return Array.isArray(raw) ? raw.map(String).filter(Boolean) : [];
+  const dockedWorkspaceTabIdsPref = useMemo(() => {
+    const raw = (browserPrefs as { dockedWorkspaceCardIds?: unknown }).dockedWorkspaceCardIds;
+    return Array.isArray(raw) ? raw.map(String).filter(Boolean) : undefined;
   }, [browserPrefs]);
 
-  // If the artifact is a workspace card that points to a docked workspace tab, hide that tab.
+  // If the artifact is a workspace card that points to a docked workspace tab, undock that workspace.
   const undockWorkspaceIfNeeded = useCallback((artifact: Artifact) => {
     const ctx = safeParseArtifactContext(artifact.context);
     if (ctx.content_type !== WORKSPACE_CONTENT_TYPE) return;
     const wsId = typeof ctx.workspace_id === 'string' ? ctx.workspace_id : undefined;
-    if (!wsId || hiddenWorkspaceTabIdsPref.includes(wsId)) return;
+    if (!wsId || (dockedWorkspaceTabIdsPref && !dockedWorkspaceTabIdsPref.includes(wsId))) return;
     if (!workspaces.some(w => w.id === wsId)) return;
-    void updatePreferences({ browser: { ...browserPrefs, hiddenWorkspaceTabIds: [...hiddenWorkspaceTabIdsPref, wsId] } });
-  }, [browserPrefs, hiddenWorkspaceTabIdsPref, updatePreferences, workspaces]);
+
+    const nextDocked = dockedWorkspaceTabIdsPref
+      ? dockedWorkspaceTabIdsPref.filter(id => id !== wsId)
+      : workspaces.filter(w => w.id !== wsId).map(w => w.id);
+
+    void updatePreferences({ browser: { ...browserPrefs, dockedWorkspaceCardIds: nextDocked } });
+  }, [browserPrefs, dockedWorkspaceTabIdsPref, updatePreferences, workspaces]);
 
   const handleBulkArchive = useCallback(async () => {
     const items = bulkSelectedArtifacts.filter(a => a.state === 'committed');
@@ -1056,7 +1062,14 @@ export default function Browser({
       return;
     }
 
-    const { collectionImports, workspaceCopies, unresolved } = resolveDroppedIds(draggedIds);
+    // Prevent dropping a workspace onto itself (container cannot contain itself)
+    const filteredDraggedIds = draggedIds.filter(id => id !== activeWorkspace?.id);
+    if (filteredDraggedIds.length === 0) {
+      // All dropped artifacts were self-drops; nothing to do
+      return;
+    }
+
+    const { collectionImports, workspaceCopies, unresolved } = resolveDroppedIds(filteredDraggedIds);
 
     // 1. Collection imports — combine classified root_ids, unresolved IDs, and any root_ids from the drag payload
     const fallbackImportIds = Array.isArray(dragPayload?.rootIds) ? dragPayload.rootIds.filter(Boolean) : [];
@@ -1077,10 +1090,17 @@ export default function Browser({
         offset += 1;
       }
     }
-  }, [activeSource, artifacts, createArtifact, importArtifactsByRootIds, resolveDroppedIds, resolvedDisplayArtifacts, searchResultArtifacts, sourceArtifacts]);
+  }, [activeSource, activeWorkspace, artifacts, createArtifact, importArtifactsByRootIds, resolveDroppedIds, resolvedDisplayArtifacts, searchResultArtifacts, sourceArtifacts]);
 
   const createWorkspaceFromDroppedArtifacts = useCallback(async (draggedIds: string[]) => {
-    const { collectionImports, workspaceCopies, unresolved } = resolveDroppedIds(draggedIds);
+    // Prevent dropping a workspace onto itself (container cannot contain itself)
+    const filteredDraggedIds = draggedIds.filter(id => id !== activeWorkspace?.id);
+    if (filteredDraggedIds.length === 0) {
+      // All dropped artifacts were self-drops; nothing to do
+      return false;
+    }
+
+    const { collectionImports, workspaceCopies, unresolved } = resolveDroppedIds(filteredDraggedIds);
     const importIds = [...collectionImports, ...unresolved];
     if (importIds.length === 0 && workspaceCopies.length === 0) return false;
 
@@ -1107,33 +1127,39 @@ export default function Browser({
 
     setActiveWorkspaceId(ws.id);
     return true;
-  }, [createWorkspace, resolveDroppedIds, setActiveWorkspaceId]);
+  }, [activeWorkspace, createWorkspace, resolveDroppedIds, setActiveWorkspaceId]);
 
   // Drop a workspace card on the header: check workspace_id from context or use the
   // artifact's root_id directly. If no matching workspace, create one on the fly.
   const handleDropWorkspace = useCallback(async (draggedIds: string[]) => {
+    // Prevent dropping a workspace onto itself (container cannot contain itself)
+    const filteredDraggedIds = draggedIds.filter(id => id !== activeWorkspace?.id);
+    if (filteredDraggedIds.length === 0) {
+      // All dropped artifacts were self-drops; nothing to do
+      return;
+    }
+
     const allArtifacts = [...searchResultArtifacts, ...resolvedDisplayArtifacts, ...artifacts, ...displayedArtifacts, ...sourceArtifacts];
 
-    for (const id of draggedIds) {
-      // Fast path: the dragged ID itself is a workspace entity ID
+    for (const id of filteredDraggedIds) {
       if (workspaces.some(w => String(w.id) === String(id))) {
-        const nextHidden = hiddenWorkspaceTabIdsPref.filter(h => h !== id);
-        if (nextHidden.length !== hiddenWorkspaceTabIdsPref.length) {
-          void updatePreferences({ browser: { ...browserPrefs, hiddenWorkspaceTabIds: nextHidden } });
+        if (dockedWorkspaceTabIdsPref) {
+          const nextDocked = dockedWorkspaceTabIdsPref.includes(id)
+            ? dockedWorkspaceTabIdsPref
+            : [...dockedWorkspaceTabIdsPref, id];
+          if (nextDocked.length !== dockedWorkspaceTabIdsPref.length) {
+            void updatePreferences({ browser: { ...browserPrefs, dockedWorkspaceCardIds: nextDocked } });
+          }
         }
         setActiveWorkspaceId(id);
         return;
       }
 
-      // Find the artifact and read workspace_id from context
       const artifact = allArtifacts.find(a => String(a.id ?? '') === id || String(a.root_id ?? '') === id);
       if (!artifact) continue;
       const ctx = safeParseArtifactContext(artifact.context);
       if (ctx.content_type !== WORKSPACE_CONTENT_TYPE) continue;
 
-      // Resolve workspace: prefer explicit workspace_id in context, then fall back to
-      // the artifact's own id/root_id (workspace IS the artifact) or collection_id
-      // (artifact lives inside the workspace it represents).
       const wsId =
         (typeof ctx.workspace_id === 'string' ? ctx.workspace_id : undefined) ??
         workspaces.find(w =>
@@ -1143,15 +1169,18 @@ export default function Browser({
         )?.id;
 
       if (wsId && workspaces.some(w => String(w.id) === wsId)) {
-        const nextHidden = hiddenWorkspaceTabIdsPref.filter(h => h !== wsId);
-        if (nextHidden.length !== hiddenWorkspaceTabIdsPref.length) {
-          void updatePreferences({ browser: { ...browserPrefs, hiddenWorkspaceTabIds: nextHidden } });
+        if (dockedWorkspaceTabIdsPref) {
+          const nextDocked = dockedWorkspaceTabIdsPref.includes(wsId)
+            ? dockedWorkspaceTabIdsPref
+            : [...dockedWorkspaceTabIdsPref, wsId];
+          if (nextDocked.length !== dockedWorkspaceTabIdsPref.length) {
+            void updatePreferences({ browser: { ...browserPrefs, dockedWorkspaceCardIds: nextDocked } });
+          }
         }
         setActiveWorkspaceId(wsId);
         return;
       }
 
-      // No workspace yet — create one and stamp the ID back into the card
       const title = typeof ctx.title === 'string' ? ctx.title : 'Untitled Workspace';
       const ws = await createWorkspace(title, '');
       if (artifact.id) {
@@ -1164,8 +1193,12 @@ export default function Browser({
       return;
     }
 
-    await createWorkspaceFromDroppedArtifacts(draggedIds);
-  }, [artifacts, browserPrefs, createWorkspace, createWorkspaceFromDroppedArtifacts, displayedArtifacts, hiddenWorkspaceTabIdsPref, resolvedDisplayArtifacts, searchResultArtifacts, setActiveWorkspaceId, sourceArtifacts, updateArtifact, updatePreferences, workspaces]);
+    const { collectionImports, workspaceCopies, unresolved } = resolveDroppedIds(draggedIds);
+    const hasItemsToImport = [...collectionImports, ...unresolved, ...workspaceCopies].length > 0;
+    if (hasItemsToImport) {
+      await createWorkspaceFromDroppedArtifacts(draggedIds);
+    }
+  }, [activeWorkspace, artifacts, browserPrefs, createWorkspace, createWorkspaceFromDroppedArtifacts, displayedArtifacts, dockedWorkspaceTabIdsPref, resolveDroppedIds, resolvedDisplayArtifacts, searchResultArtifacts, setActiveWorkspaceId, sourceArtifacts, updateArtifact, updatePreferences, workspaces]);
 
   const handleSelectArtifactType = useCallback(async (contentType: string) => {
     const type = getContentTypeById(contentType);

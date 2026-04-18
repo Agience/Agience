@@ -1,0 +1,43 @@
+# home.agience.ai — Caddy reverse proxy
+#
+# TLS cert is downloaded from CDN at startup by the init container and stored
+# in the keys volume at /run/keys/home.crt + home.key. The /run/keys volume
+# is mounted read-only at container startup.
+#
+# Cert is renewed monthly by the renew-cert GitHub Actions workflow and
+# re-uploaded to the CDN. It takes effect on the next `docker compose up`.
+#
+# home.agience.ai resolves to 127.0.0.1 so this only serves local traffic.
+
+home.agience.ai {
+    tls /run/keys/home.crt /run/keys/home.key
+
+    # API — backend FastAPI (SSE requires flush_interval -1)
+    handle_path /api/* {
+        reverse_proxy backend:8081 {
+            flush_interval -1
+        }
+    }
+
+    # Content — MinIO local storage
+    handle_path /content/* {
+        reverse_proxy content:9000
+    }
+
+    # Streaming — SRS HTTP API and HLS playback
+    handle_path /stream/* {
+        reverse_proxy stream:1985
+    }
+
+    # Frontend SPA — all other paths
+    handle {
+        reverse_proxy frontend:80
+    }
+
+    header {
+        -Server
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options nosniff
+        X-Frame-Options SAMEORIGIN
+    }
+}

@@ -138,9 +138,9 @@ def ensure_all_seed_sub_collections(arango_db: StandardDatabase) -> None:
 def _ensure_collection(
     arango_db: StandardDatabase,
     *,
-    slug: str,
     name: str,
     description: str,
+    slug: str,
 ) -> Optional[str]:
     col_id = get_id(slug)
     existing = db_get_collection_by_id(arango_db, col_id)
@@ -157,7 +157,6 @@ def _ensure_collection(
             created_by=AGIENCE_PLATFORM_USER_ID,
             content_type=COLLECTION_CONTENT_TYPE,
             state=CollectionEntity.STATE_COMMITTED,
-            slug=slug,
             created_time=now,
             modified_time=now,
         )
@@ -214,7 +213,6 @@ def _ensure_artifact_in_collection(
             content_type=resolved_content_type,
             created_by=AGIENCE_PLATFORM_USER_ID,
             created_time=now,
-            slug=slug,
         )
         db_create_artifact(arango_db, artifact)
         db_add_artifact_to_collection(arango_db, collection_id, root_id)

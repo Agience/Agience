@@ -24,11 +24,11 @@ The universal engineering noun across code, API, database, and documentation. An
 carries the three-part trinity: Content (payload), Context (metadata + provenance), and
 a Transform reference (how it was produced). Everything in the platform is represented as
 an artifact at the data layer.
-Code usage: `Artifact`, `WorkspaceArtifact`, `CollectionArtifact`,
-`CollectionArtifactVersion`, `artifact_id`. API paths: `/workspaces/{id}/artifacts`,
-`/collections/{id}/artifacts`. MCP tools: `get_artifact`, `create_artifact`,
-`update_artifact`, `manage_artifact`. DB collection: unified `artifacts` (ArangoDB),
-with `collection_id` referencing the container and `state` discriminating draft/committed/archived.
+Code usage: `Artifact`, `artifact_id`. `Collection` is an alias for `Artifact`.
+API paths: `/artifacts`, `/artifacts/{id}`, `/artifacts/{id}/invoke`.
+MCP tools: `get_artifact`, `create_artifact`, `update_artifact`, `manage_artifact`.
+DB collection: unified `artifacts` (ArangoDB), with `collection_id` referencing the
+container and `state` discriminating draft/committed/archived.
 See also: Card (UI surface for the same data), Collection, Workspace.
 
 **Content** — The raw payload inside an artifact, stored in `artifact.content`. Covers
@@ -69,8 +69,9 @@ See also: Artifact (the underlying data entity).
 ArangoDB. Collections provide immutable version history and are the platform's
 canonical truth boundary. Use collections for stabilised specs, approved reports,
 canonical evidence packs, and distributable templates. Access is controlled via Grants.
-Code usage: `CollectionEntity`, `/collections/{id}/artifacts`, ArangoDB document
-collections and `collection_artifacts` edge collection.
+Code usage: `Collection` (alias for `Artifact`), `collection_id`.
+A collection is a container artifact with `content_type = COLLECTION_CONTENT_TYPE`.
+Children linked via `collection_artifacts` edge collection.
 See also: Workspace (draft area), Commit (the promotion operation).
 
 **Workspace** — A draft, high-churn staging area stored in ArangoDB. Workspaces have a
@@ -78,8 +79,9 @@ dual surface: humans interact with artifacts via Cards; agents interact with the
 data as Artifacts. Edits may overwrite prior versions — workspaces are not the
 immutable history boundary. Artifacts are promoted from a workspace into a Collection
 via a commit operation.
-Code usage: `WorkspaceEntity`, `/workspaces/{id}/artifacts`, ArangoDB
-`workspace_artifacts` collection.
+Code usage: `Collection` (alias for `Artifact`), `workspace`.
+A workspace is a container artifact with `content_type = WORKSPACE_CONTENT_TYPE`.
+API: `/artifacts` (same unified API). ArangoDB: `artifacts` collection.
 See also: Collection, Artifact, Card.
 
 **Receipt / Provenance** — A durable record of an execution, embedded in an output
@@ -98,7 +100,8 @@ See also: Context, Tool call.
 **Information Triangle** — The three-component model that describes any unit of
 Information: **Content** (what it is — the payload), **Context** (where it fits —
 ontology, provenance, identity), and **Transform** (how it is produced or used —
-operational semantics). Any two components can predict the third. Completeness levels:
+operational semantics). Transform is the abstract concept; Operator is the concrete,
+callable execution surface that realizes it. Any two components can predict the third. Completeness levels:
 L1 Content-only (raw upload), L2 Content + Context (classified and attributable),
 L3 all three (actionable and reproducible), L4 training/eval-ready (L3 plus strong
 provenance and a deterministic evaluation contract or scoring rubric).
@@ -124,7 +127,7 @@ See also: Operator, Tool call.
 work in Agience solutions. Inputs and outputs should be recorded (with provenance) on
 the output artifact's context. Every tool call should produce traceable artifacts rather
 than side-effecting state silently.
-Code usage: MCP `tools/call` protocol. Backend proxy: `agents_router.py` → `agent_service.invoke()`.
+Code usage: MCP `tools/call` protocol. Execution flows through `POST /artifacts/{id}/invoke` via `artifacts_router.py` → `operation_dispatcher` → `agent_service.invoke()`.
 
 **Event** — A signal that something occurred in the platform. Types include artifact
 created/updated/deleted, upload completed, inbound message received, and commit events.
@@ -287,8 +290,9 @@ See also: Grant.
 
 **Grant** — The permission bundle attached to a Key. Encodes least-privilege permissions
 and resource constraints for the token bearer. Collections use Grants for access
-control; always validate via `check_collection_access()`.
-Code usage: `GrantEntity`, `check_collection_access()` in `collection_service.py`.
+control; always validate via `check_access()` (from `services/dependencies.py`).
+Nine flags: can_create, can_read, can_update, can_delete, can_evict, can_add, can_share, can_invoke, can_admin.
+Code usage: `GrantEntity`, `check_access()` in `services/dependencies.py`.
 See also: Key.
 
 **Server credential** — A credential used by an MCP server to authenticate to the

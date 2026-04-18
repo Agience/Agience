@@ -76,6 +76,7 @@ def init_arangodb(host: str, port: int, username: str, password: str, db_name: s
 
     created_indexes = _create_indexes(db)
     graph_created = _create_graph(db)
+    _backfill_edge_fields(db)
 
     logger.info(
         "ArangoDB schema ensure complete (db_created=%s, collections_created=%d, edge_collections_created=%d, indexes_created=%d, graph_created=%s)",
@@ -153,25 +154,25 @@ def _create_indexes(db: StandardDatabase) -> int:
     # --- grants indexes ------------------------------------------------
     grants = db.collection("grants")
 
-    if not _index_exists(grants, ["resource_type", "resource_id", "state"], "hash"):
-        grants.add_hash_index(fields=["resource_type", "resource_id", "state"], unique=False)
+    if not _index_exists(grants, ["resource_id", "state"], "hash"):
+        grants.add_hash_index(fields=["resource_id", "state"], unique=False)
         created_indexes += 1
-        logger.info("Created index: grants.(resource_type,resource_id,state)")
+        logger.info("Created index: grants.(resource_id,state)")
 
-    if not _index_exists(grants, ["grantee_id", "resource_type", "state"], "hash"):
-        grants.add_hash_index(fields=["grantee_id", "resource_type", "state"], unique=False)
+    if not _index_exists(grants, ["grantee_id", "state"], "hash"):
+        grants.add_hash_index(fields=["grantee_id", "state"], unique=False)
         created_indexes += 1
-        logger.info("Created index: grants.(grantee_id,resource_type,state)")
+        logger.info("Created index: grants.(grantee_id,state)")
 
     if not _index_exists(grants, ["grantee_type", "grantee_id", "state"], "hash"):
         grants.add_hash_index(fields=["grantee_type", "grantee_id", "state"], unique=False)
         created_indexes += 1
         logger.info("Created index: grants.(grantee_type,grantee_id,state)")
 
-    if not _index_exists(grants, ["resource_type", "resource_id", "grantee_type", "state"], "hash"):
-        grants.add_hash_index(fields=["resource_type", "resource_id", "grantee_type", "state"], unique=False)
+    if not _index_exists(grants, ["resource_id", "grantee_type", "state"], "hash"):
+        grants.add_hash_index(fields=["resource_id", "grantee_type", "state"], unique=False)
         created_indexes += 1
-        logger.info("Created index: grants.(resource_type,resource_id,grantee_type,state)")
+        logger.info("Created index: grants.(resource_id,grantee_type,state)")
 
     if not _index_exists(grants, ["expires_at"], "hash"):
         grants.add_hash_index(fields=["expires_at"], unique=False, sparse=True)
@@ -315,6 +316,28 @@ def _create_graph(db: StandardDatabase) -> bool:
     except Exception as e:
         logger.warning(f"Graph {graph_name} may already exist: {e}")
         return False
+
+
+def _backfill_edge_fields(db: StandardDatabase) -> None:
+    """Backfill ``origin`` and ``propagate`` on edges missing these fields.
+
+    Sets creation-edge defaults: ``origin: true``, ``propagate: null``
+    (null = all actions propagate).
+    """
+    try:
+        cursor = db.aql.execute(
+            """
+            FOR e IN collection_artifacts
+              FILTER !HAS(e, "origin")
+              UPDATE e WITH { origin: true, propagate: null } IN collection_artifacts
+              RETURN 1
+            """
+        )
+        count = len(list(cursor))
+        if count > 0:
+            logger.info("Backfilled origin/propagate on %d edges", count)
+    except Exception as e:
+        logger.warning("Edge backfill failed (will retry next startup): %s", e)
 
 
 def get_arangodb_connection(host: str, port: int, username: str, password: str, db_name: str) -> StandardDatabase:

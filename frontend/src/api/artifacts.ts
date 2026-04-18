@@ -43,6 +43,14 @@ export function deleteArtifact(artifactId: string): Promise<void> {
   return del(`/artifacts/${artifactId}`);
 }
 
+/** Fetch child artifacts of a parent artifact. */
+export function getChildren(
+  artifactId: string,
+  params?: { content_type?: string; workspace_id?: string },
+): Promise<ArtifactResponse[]> {
+  return get(`/artifacts/${artifactId}/children`, { params });
+}
+
 /**
  * Add an item to a container (workspace or collection).
  *

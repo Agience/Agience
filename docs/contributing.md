@@ -131,7 +131,7 @@ Full conventions are in [Best Practices](guides/best-practices.md). Key rules:
 - Python 3.11+. Follow existing patterns in `backend/`.
 - Run `ruff check .` from `backend/` and fix all issues before pushing.
 - Never call DB adapters directly from routers — all DB access goes through services.
-- Use `to_dict()` on artifact entities — not the old `to_dict_workspace()` / `to_dict_collection()` methods (container entities still have these; artifact rows use `to_dict()`).
+- Use `to_dict()` on all entities. `Collection` is an alias for `Artifact` — there are no separate entity classes or serialization methods.
 - Use `agent_service.invoke()` for all agent calls. Never call agents directly.
 
 **Frontend (TypeScript / React)**

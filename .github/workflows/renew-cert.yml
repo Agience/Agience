@@ -1,0 +1,81 @@
+# Renews the TLS certificate for home.agience.ai via Cloudflare DNS-01 and
+# publishes the new cert/key to the Agience/get.agience.ai repository so
+# get.agience.ai/home/tls.{crt,key} serves the fresh files.
+#
+# On the next `docker compose up`, the init container downloads the fresh cert
+# automatically — no image rebuild or container restart required in advance.
+#
+# Runs automatically on the 1st of every month (certs expire at 90 days;
+# Let's Encrypt recommends renewing at 60). Can also be triggered manually.
+#
+# Required secrets:
+#   EASYDNS_TOKEN    — EasyDNS API token (Account → API Access)
+#   EASYDNS_KEY      — EasyDNS API key (paired with the token)
+#   DEPLOY_TOKEN_MY  — PAT with repo scope; already used by deploy-suite.yml
+
+name: Renew cert
+
+on:
+  schedule:
+    - cron: '0 4 1 * *'   # 04:00 UTC on the 1st of every month
+  workflow_dispatch:        # run manually at any time
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Install acme.sh
+        run: |
+          curl -fsSL https://get.acme.sh | sh -s email=ops@agience.ai
+          echo "$HOME/.acme.sh" >> $GITHUB_PATH
+
+      - name: Issue / renew certificate (DNS-01 via EasyDNS)
+        env:
+          EASYDNS_Token: ${{ secrets.EASYDNS_TOKEN }}
+          EASYDNS_Key: ${{ secrets.EASYDNS_KEY }}
+        run: |
+          ~/.acme.sh/acme.sh \
+            --issue \
+            --dns dns_easydns \
+            -d home.agience.ai \
+            --server letsencrypt \
+            --force \
+            --fullchainpath /tmp/home.crt \
+            --keypath /tmp/home.key
+
+      - name: Publish cert to get.agience.ai
+        env:
+          GH_TOKEN: ${{ secrets.DEPLOY_TOKEN_MY }}
+        run: |
+          set -euo pipefail
+          REPO="Agience/get.agience.ai"
+          DATE=$(date +%Y-%m-%d)
+
+          upload_file() {
+            local path=$1
+            local file=$2
+            local msg=$3
+
+            CONTENT=$(base64 -w0 "$file")
+            EXISTING_SHA=$(gh api "repos/$REPO/contents/$path" --jq '.sha' 2>/dev/null || true)
+
+            if [ -n "$EXISTING_SHA" ]; then
+              gh api --method PUT "repos/$REPO/contents/$path" \
+                --field message="$msg" \
+                --field content="$CONTENT" \
+                --field sha="$EXISTING_SHA" \
+                --silent
+            else
+              gh api --method PUT "repos/$REPO/contents/$path" \
+                --field message="$msg" \
+                --field content="$CONTENT" \
+                --silent
+            fi
+            echo "Published $path"
+          }
+
+          upload_file "home/tls.crt" "/tmp/home.crt" "chore: renew home.agience.ai cert $DATE"
+          upload_file "home/tls.key" "/tmp/home.key" "chore: renew home.agience.ai key $DATE"

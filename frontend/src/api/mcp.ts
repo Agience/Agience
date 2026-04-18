@@ -1,6 +1,92 @@
 // frontend/src/api/mcp.ts
 import api from './api';
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UI_URI_HOST_PATTERN = /^ui:\/\/([^/]+)\//i;
+
+const serverArtifactIdCache = new Map<string, string>();
+
+function normalizeServerRef(value: string): string {
+  return value.trim().toLowerCase().replace(/[\s_]+/g, '-');
+}
+
+function cacheServerInfo(serverInfo: MCPServerInfo): void {
+  const serverId = String(serverInfo.server ?? '').trim();
+  if (!serverId) return;
+
+  serverArtifactIdCache.set(serverId, serverId);
+
+  const normalizedName = normalizeServerRef(serverInfo.name ?? '');
+  if (normalizedName) {
+    serverArtifactIdCache.set(normalizedName, serverId);
+  }
+
+  for (const resource of serverInfo.resources ?? []) {
+    const uri = String(resource.uri ?? '').trim();
+    if (!uri) continue;
+
+    const match = UI_URI_HOST_PATTERN.exec(uri);
+    if (!match?.[1]) continue;
+
+    serverArtifactIdCache.set(normalizeServerRef(match[1]), serverId);
+  }
+}
+
+async function resolveServerArtifactId(serverRef: string, workspaceId?: string): Promise<string> {
+  const trimmedRef = serverRef.trim();
+  if (!trimmedRef) {
+    throw new Error('Missing MCP server artifact UUID');
+  }
+
+  if (UUID_PATTERN.test(trimmedRef)) {
+    return trimmedRef;
+  }
+
+  const normalizedRef = normalizeServerRef(trimmedRef);
+  const cached = serverArtifactIdCache.get(trimmedRef) ?? serverArtifactIdCache.get(normalizedRef);
+  if (cached) {
+    return cached;
+  }
+
+  const resolutionErrors: string[] = [];
+
+  if (workspaceId) {
+    try {
+      const workspaceServers = await listWorkspaceMCPServers(workspaceId);
+      workspaceServers.forEach(cacheServerInfo);
+      const workspaceResolved = serverArtifactIdCache.get(trimmedRef) ?? serverArtifactIdCache.get(normalizedRef);
+      if (workspaceResolved) {
+        return workspaceResolved;
+      }
+    } catch (error) {
+      resolutionErrors.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  try {
+    const allServers = await listAllMCPServers();
+    allServers.forEach(cacheServerInfo);
+    const globalResolved = serverArtifactIdCache.get(trimmedRef) ?? serverArtifactIdCache.get(normalizedRef);
+    if (globalResolved) {
+      return globalResolved;
+    }
+  } catch (error) {
+    resolutionErrors.push(error instanceof Error ? error.message : String(error));
+  }
+
+  if (resolutionErrors.length > 0) {
+    throw new Error(
+      `Failed to resolve MCP server '${serverRef}' to an artifact UUID: ${resolutionErrors.join('; ')}`,
+    );
+  }
+
+  throw new Error(`Unknown MCP server reference '${serverRef}'. Expected a server artifact UUID.`);
+}
+
+export function __clearServerArtifactIdCacheForTests(): void {
+  serverArtifactIdCache.clear();
+}
+
 export interface MCPServerTransport {
   type: 'stdio' | 'http';
   command?: string;
@@ -103,8 +189,9 @@ export async function importMCPResources(
   server: string,
   resources: MCPResource[]
 ): Promise<{ count: number; artifact_ids: string[] }> {
+  const serverArtifactId = await resolveServerArtifactId(server, workspaceId);
   const response = await api.post<{ created_artifact_ids: string[]; count: number }>(
-    `/artifacts/${encodeURIComponent(server)}/op/resources_import`,
+    `/artifacts/${encodeURIComponent(serverArtifactId)}/op/resources_import`,
     {
       workspace_id: workspaceId,
       resources,
@@ -136,8 +223,9 @@ export async function readMCPResource(
   uri: string,
   workspaceId?: string,
 ): Promise<MCPResourceContents> {
+  const serverArtifactId = await resolveServerArtifactId(server, workspaceId);
   const response = await api.post<MCPResourceContents>(
-    `/artifacts/${encodeURIComponent(server)}/op/resources_read`,
+    `/artifacts/${encodeURIComponent(serverArtifactId)}/op/resources_read`,
     { uri, workspace_id: workspaceId }
   );
   return response.data;
@@ -175,8 +263,9 @@ export async function proxyToolCall(
   serverArtifactId: string = 'agience-core',
   workspaceId?: string,
 ): Promise<{ content: Array<{ type: string; text?: string }> }> {
+  const resolvedServerArtifactId = await resolveServerArtifactId(serverArtifactId, workspaceId);
   const response = await api.post(
-    `/artifacts/${encodeURIComponent(serverArtifactId)}/invoke`,
+    `/artifacts/${encodeURIComponent(resolvedServerArtifactId)}/invoke`,
     { name: toolName, arguments: args, workspace_id: workspaceId },
     { timeout: 0 },  // no timeout — invoke runs unbounded LLM + tool chains; deltas stream via WebSocket
   );

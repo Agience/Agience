@@ -215,7 +215,7 @@ The commit step is intentionally gated. The server enforces these constraints:
 
 - `commit_workspace` requires a `commit_token` from a preceding `commit_preview`. Calls without a valid token are rejected with 400.
 - Tokens expire after 30 minutes. If expired, run `commit_preview` again.
-- Only collection owners and explicitly authorized entities can commit. Unauthorized attempts return 403.
+- Only principals with appropriate grants (e.g., can_invoke on the workspace) can commit. Unauthorized attempts return 403.
 - `commit_workspace` carries `destructiveHint: true` in the MCP protocol — compliant clients will flag this as requiring human confirmation.
 
 Never call `commit_workspace` autonomously in an agent loop. Always preview first, present the plan, and wait for explicit human approval.

@@ -108,7 +108,6 @@ def ensure_llm_connections_collection(arango_db: StandardDatabase) -> Optional[s
             arango_db,
             collection_id=collection_id,
             root_id=root_id,
-            slug=slug,
             context=_build_connection_context(conn),
             content=_build_connection_content(conn),
             content_type=LLM_CONNECTION_CONTENT_TYPE,
@@ -169,7 +168,6 @@ def _ensure_collection(arango_db: StandardDatabase) -> Optional[str]:
             created_by=AGIENCE_PLATFORM_USER_ID,
             content_type=COLLECTION_CONTENT_TYPE,
             state=CollectionEntity.STATE_COMMITTED,
-            slug=LLM_CONNECTIONS_COLLECTION_SLUG,
             created_time=now,
             modified_time=now,
         )
@@ -186,7 +184,6 @@ def _ensure_artifact_linked(
     *,
     collection_id: str,
     root_id: str,
-    slug: str,
     context: str,
     content: str,
     content_type: Optional[str] = None,
@@ -217,7 +214,6 @@ def _ensure_artifact_linked(
             content_type=content_type,
             created_by=AGIENCE_PLATFORM_USER_ID,
             created_time=now,
-            slug=slug,
         )
         db_create_artifact(arango_db, artifact)
         db_add_artifact_to_collection(arango_db, collection_id, root_id, artifact.id)

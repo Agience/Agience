@@ -43,6 +43,10 @@ _EDGE_ENDPOINT_URL_PUBLIC = (
     or os.getenv("AWS_ENDPOINT_URL")
     or _EDGE_ENDPOINT_URL_INTERNAL
 )
+# Optional override for presigned URLs consumed by MCP servers.
+# When servers run in a different network context than the backend, presigned
+# URLs need a hostname reachable from the server's network.
+_EDGE_ENDPOINT_URL_SERVER = os.getenv("CONTENT_EDGE_ENDPOINT_URL")
 
 # Durable store: hidden persistence layer, typically AWS S3.
 _DURABLE_BUCKET = (os.getenv("CONTENT_DURABLE_BUCKET") or "").strip()
@@ -113,6 +117,16 @@ _s3_edge_public = _make_s3_client(
     region_name=_EDGE_REGION,
     endpoint_url=_EDGE_ENDPOINT_URL_PUBLIC,
 )
+_s3_edge_server = (
+    _make_s3_client(
+        access_key_id=_EDGE_ACCESS_KEY_ID,
+        secret_access_key=_EDGE_SECRET_ACCESS_KEY,
+        region_name=_EDGE_REGION,
+        endpoint_url=_EDGE_ENDPOINT_URL_SERVER,
+    )
+    if _EDGE_ENDPOINT_URL_SERVER
+    else None
+)
 _s3_durable = (
     _make_s3_client(
         access_key_id=_DURABLE_ACCESS_KEY_ID,
@@ -137,7 +151,7 @@ def reinit_edge_clients() -> None:
     loaded from the DB, so the endpoint URL and credentials always reflect the live
     config rather than the module-level env-var snapshot.
     """
-    global _s3_edge_internal, _s3_edge_public, _BUCKET_CHECKED, _CORS_APPLIED, _CORS_UNSUPPORTED
+    global _s3_edge_internal, _s3_edge_public, _s3_edge_server, _BUCKET_CHECKED, _CORS_APPLIED, _CORS_UNSUPPORTED
     try:
         from core.key_manager import get_minio_pass
         secret_key = get_minio_pass()
@@ -170,6 +184,18 @@ def reinit_edge_clients() -> None:
         region_name=_EDGE_REGION,
         endpoint_url=endpoint_public,
     )
+    # Server-facing client for presigned URLs consumed by MCP servers in a
+    # different network context.  Only created when CONTENT_EDGE_ENDPOINT_URL
+    # is set.
+    if _EDGE_ENDPOINT_URL_SERVER:
+        _s3_edge_server = _make_s3_client(
+            access_key_id=access_key,
+            secret_access_key=secret_key,
+            region_name=_EDGE_REGION,
+            endpoint_url=_EDGE_ENDPOINT_URL_SERVER,
+        )
+    else:
+        _s3_edge_server = None
     # Reset so the next operation re-checks (and creates if needed) the bucket
     # with the freshly configured clients.
     _BUCKET_CHECKED = False
@@ -363,8 +389,14 @@ def generate_signed_url(
     filename: Optional[str] = None,
     content_type: Optional[str] = None,
     as_attachment: bool = False,
+    server_facing: bool = False,
 ) -> str:
-    """Generate a signed content URL from the edge origin, hydrating from durable storage when needed."""
+    """Generate a signed content URL from the edge origin, hydrating from durable storage when needed.
+
+    When *server_facing* is True the URL is generated using the server-facing
+    S3 client so that MCP servers in a different network context can reach the
+    content store.  Browser callers should use the default (public) URL.
+    """
     if expires_in is None:
         expires_in = config.CONTENT_DOWNLOAD_URL_EXPIRY
     effective_content_type = content_type
@@ -402,7 +434,10 @@ def generate_signed_url(
             else:
                 params["ResponseContentType"] = effective_content_type
 
-        return _s3_edge_public.generate_presigned_url(
+        s3_client = _s3_edge_public
+        if server_facing:
+            s3_client = _s3_edge_server or _s3_edge_internal
+        return s3_client.generate_presigned_url(
             "get_object",
             Params=params,
             ExpiresIn=expires_in,

@@ -59,7 +59,7 @@ The parser recognizes these top-level fields without a `metadata.` prefix:
 - `size`
 - `created_at`
 - `updated_at`
-- `owner_id`
+- `created_by`
 - `collection_id`
 
 Unknown field names are automatically prefixed with `metadata.`.

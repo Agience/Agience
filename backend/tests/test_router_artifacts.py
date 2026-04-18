@@ -54,9 +54,8 @@ def _patch_check_access():
         can_delete=True,
         can_invoke=True,
         can_add=True,
-        can_search=True,
+        can_share=True,
         resource_id=None,
-        resource_type=None,
     )
     with patch("routers.artifacts_router.check_access", return_value=grant):
         yield grant
@@ -136,7 +135,8 @@ class TestAuthGuards:
 
     @pytest.mark.asyncio
     async def test_commit_requires_user(self, anon_client: AsyncClient):
-        r = await anon_client.post("/artifacts/c-1/commit", json={})
+        # Commit is now dispatched via /op/commit
+        r = await anon_client.post("/artifacts/c-1/op/commit", json={})
         assert r.status_code == 401
 
 
@@ -155,8 +155,9 @@ class TestCreateArtifact:
             context="",
         )
         with patch(
-            "services.workspace_service.create_workspace", return_value=ws
-        ) as create:
+            "services.operation_dispatcher.dispatch",
+            return_value=ws.to_dict(),
+        ):
             r = await client.post(
                 "/artifacts",
                 json={"content_type": WORKSPACE_CONTENT_TYPE, "name": "My WS"},
@@ -164,8 +165,6 @@ class TestCreateArtifact:
         assert r.status_code == 201
         body = r.json()
         assert body["id"] == "ws-1"
-        assert body["_container_type"] == "workspace"
-        create.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_create_collection_container(self, client: AsyncClient):
@@ -177,14 +176,14 @@ class TestCreateArtifact:
             context="",
         )
         with patch(
-            "services.collection_service.create_new_collection", return_value=col
+            "services.operation_dispatcher.dispatch",
+            return_value=col.to_dict(),
         ):
             r = await client.post(
                 "/artifacts",
                 json={"content_type": "application/vnd.agience.collection+json", "name": "My Col"},
             )
         assert r.status_code == 201
-        assert r.json()["_container_type"] == "collection"
 
     @pytest.mark.asyncio
     async def test_create_artifact_in_unknown_container_returns_404(
@@ -212,16 +211,21 @@ class TestCreateArtifact:
         from core.dependencies import get_arango_db
 
         app.dependency_overrides[get_arango_db] = lambda: arango
-        created = ArtifactEntity(
-            id="art-1",
-            root_id="art-1",
-            collection_id="container-1",
-            context='{"content_type":"text/plain"}',
-            content="hello",
-            state=ArtifactEntity.STATE_DRAFT,
-        )
+        captured: dict = {}
+
+        def fake_create(**kwargs):
+            captured.update(kwargs)
+            return ArtifactEntity(
+                id="art-1",
+                root_id="art-1",
+                collection_id="container-1",
+                context='{"content_type":"text/plain"}',
+                content="hello",
+                state=ArtifactEntity.STATE_DRAFT,
+            )
+
         try:
-            with patch("services.workspace_service.create_workspace_artifact", return_value=created):
+            with patch("services.workspace_service.create_workspace_artifact", side_effect=fake_create):
                 r = await client.post(
                     "/artifacts",
                     json={
@@ -236,6 +240,7 @@ class TestCreateArtifact:
         body = r.json()
         assert body["id"] == "art-1"
         assert body["collection_id"] == "container-1"
+        assert "slug" not in captured
 
     @pytest.mark.asyncio
     async def test_create_artifact_merges_content_type_into_context(
@@ -782,125 +787,67 @@ class TestBatchFetch:
         assert len(out) == 1
         assert out[0]["id"] == "ws-1"
         assert out[0]["root_id"] == "ws-1"
-        assert out[0]["content"] == "Seed inbox workspace"
-        assert isinstance(out[0]["context"], str)
-        assert '"title": "Inbox"' in out[0]["context"]
+        # Content defaults to "" for containers (normalization no longer
+        # synthesizes content from description).
+        assert out[0]["content"] == ""
+        # Context defaults to "" when not set (no type-specific synthesis).
+        assert out[0]["context"] == ""
 
 
 # ---------------------------------------------------------------------------
-# POST /artifacts/{container_id}/commit + /commit/preview
+# POST /artifacts/{container_id}/op/commit + /op/commit_preview
+# Commit and preview are now dispatched via the operation dispatcher
+# through type.json operations blocks on the workspace type.
 # ---------------------------------------------------------------------------
 
 class TestCommitArtifacts:
     @pytest.mark.asyncio
-    async def test_commit_400_when_container_is_not_workspace(
-        self, client: AsyncClient
-    ):
-        arango = MagicMock()
-        _patch_db_collection(arango, container_doc=_coll_doc("application/json"))
-        from core.dependencies import get_arango_db
-
-        app.dependency_overrides[get_arango_db] = lambda: arango
-        try:
-            r = await client.post("/artifacts/container-1/commit", json={})
-        finally:
-            app.dependency_overrides.pop(get_arango_db, None)
-        assert r.status_code == 400
-        assert "Commit only supported on workspaces" in r.json()["detail"]
-
-    @pytest.mark.asyncio
-    async def test_commit_happy_path(self, client: AsyncClient):
+    async def test_commit_dispatches_through_op_endpoint(self, client: AsyncClient):
+        """Commit is now dispatched via POST /artifacts/{id}/op/commit."""
         arango = MagicMock()
         _patch_db_collection(arango, container_doc=_coll_doc(WORKSPACE_CONTENT_TYPE))
         from core.dependencies import get_arango_db
 
         app.dependency_overrides[get_arango_db] = lambda: arango
-        from api.workspaces.commit import (
-            CommitActorSummary,
-            WorkspaceCommitPlanSummary,
-            WorkspaceCommitResponse,
-        )
-
-        fake_resp = WorkspaceCommitResponse(
-            workspace_id="container-1",
-            plan=WorkspaceCommitPlanSummary(
-                artifacts=[],
-                collections=[],
-                warnings=[],
-                total_artifacts=0,
-                total_adds=0,
-                total_removes=0,
-            ),
-            actor=CommitActorSummary(actor_type="user", actor_id="user-123"),
-            dry_run=False,
-            commit_token=None,
-            updated_workspace_artifacts=[],
-            deleted_workspace_artifact_ids=[],
-            skipped_workspace_artifact_ids=[],
-            per_collection=[],
-        )
         try:
             with patch(
-                "services.workspace_service.commit_workspace_to_collections",
-                return_value=fake_resp,
-            ) as commit:
+                "services.workspace_service.dispatch_commit",
+                return_value={"status": "committed"},
+            ), patch(
+                "services.operation_dispatcher.dispatch",
+                return_value={"status": "committed"},
+            ):
                 r = await client.post(
-                    "/artifacts/container-1/commit",
-                    json={"artifact_ids": ["a-1"], "dry_run": False},
+                    "/artifacts/container-1/op/commit",
+                    json={"artifact_ids": ["a-1"]},
                 )
         finally:
             app.dependency_overrides.pop(get_arango_db, None)
-
+        # The op endpoint returns 200 on success.
         assert r.status_code == 200
-        # commit_workspace_to_collections received the right kwargs.
-        assert commit.call_args.kwargs["workspace_id"] == "container-1"
-        assert commit.call_args.kwargs["dry_run"] is False
-        assert commit.call_args.kwargs["artifact_ids"] == ["a-1"]
 
     @pytest.mark.asyncio
-    async def test_commit_preview_forces_dry_run(self, client: AsyncClient):
+    async def test_commit_preview_dispatches_through_op_endpoint(
+        self, client: AsyncClient
+    ):
+        """Preview is now dispatched via POST /artifacts/{id}/op/commit_preview."""
         arango = MagicMock()
         _patch_db_collection(arango, container_doc=_coll_doc(WORKSPACE_CONTENT_TYPE))
         from core.dependencies import get_arango_db
 
         app.dependency_overrides[get_arango_db] = lambda: arango
-        from api.workspaces.commit import (
-            CommitActorSummary,
-            WorkspaceCommitPlanSummary,
-            WorkspaceCommitResponse,
-        )
-
-        fake_resp = WorkspaceCommitResponse(
-            workspace_id="container-1",
-            plan=WorkspaceCommitPlanSummary(
-                artifacts=[],
-                collections=[],
-                warnings=[],
-                total_artifacts=0,
-                total_adds=0,
-                total_removes=0,
-            ),
-            actor=CommitActorSummary(actor_type="user", actor_id="user-123"),
-            dry_run=True,
-            commit_token="tok",
-            updated_workspace_artifacts=[],
-            deleted_workspace_artifact_ids=[],
-            skipped_workspace_artifact_ids=[],
-            per_collection=[],
-        )
         try:
             with patch(
-                "services.workspace_service.commit_workspace_to_collections",
-                return_value=fake_resp,
-            ) as commit:
-                await client.post(
-                    "/artifacts/container-1/commit/preview",
+                "services.operation_dispatcher.dispatch",
+                return_value={"status": "preview"},
+            ):
+                r = await client.post(
+                    "/artifacts/container-1/op/commit_preview",
                     json={},
                 )
         finally:
             app.dependency_overrides.pop(get_arango_db, None)
-        # Preview path always passes dry_run=True regardless of body.
-        assert commit.call_args.kwargs["dry_run"] is True
+        assert r.status_code == 200
 
 
 # ---------------------------------------------------------------------------
@@ -997,7 +944,7 @@ class TestContentUrl:
             app.dependency_overrides.pop(get_arango_db, None)
         assert r.status_code == 200
         assert r.json() == {"url": "https://signed.example/x"}
-        gen.assert_called_once_with("u-1/a-1.content", filename="f.pdf", content_type="application/pdf")
+        gen.assert_called_once_with("u-1/a-1.content", filename="f.pdf", content_type="application/pdf", server_facing=False)
 
 
 # ---------------------------------------------------------------------------
@@ -1105,6 +1052,8 @@ class TestListCommits:
 
 
 class TestRevertArtifact:
+    """Revert is now dispatched via POST /artifacts/{id}/op/revert."""
+
     @pytest.mark.asyncio
     async def test_404_when_artifact_missing(self, client: AsyncClient):
         arango = MagicMock()
@@ -1113,30 +1062,13 @@ class TestRevertArtifact:
 
         app.dependency_overrides[get_arango_db] = lambda: arango
         try:
-            r = await client.post("/artifacts/missing/revert")
+            r = await client.post("/artifacts/missing/op/revert", json={})
         finally:
             app.dependency_overrides.pop(get_arango_db, None)
         assert r.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_400_when_nothing_to_revert(self, client: AsyncClient):
-        arango = MagicMock()
-        _patch_db_collection(arango, artifact_doc=_artifact_doc())
-        from core.dependencies import get_arango_db
-
-        app.dependency_overrides[get_arango_db] = lambda: arango
-        try:
-            with patch(
-                "services.workspace_service.revert_artifact", return_value=None
-            ):
-                r = await client.post("/artifacts/art-1/revert")
-        finally:
-            app.dependency_overrides.pop(get_arango_db, None)
-        assert r.status_code == 400
-        assert "not revertable" in r.json()["detail"]
-
-    @pytest.mark.asyncio
-    async def test_happy_path_uses_collection_id_for_workspace(
+    async def test_revert_dispatches_through_op_endpoint(
         self, client: AsyncClient
     ):
         arango = MagicMock()
@@ -1144,30 +1076,15 @@ class TestRevertArtifact:
         from core.dependencies import get_arango_db
 
         app.dependency_overrides[get_arango_db] = lambda: arango
-
-        committed = ArtifactEntity(
-            id="committed-id",
-            root_id="art-1",
-            collection_id="container-1",
-            context="{}",
-            content="last good",
-            state=ArtifactEntity.STATE_COMMITTED,
-        )
         try:
             with patch(
-                "services.workspace_service.revert_artifact",
-                return_value=committed,
-            ) as svc:
-                r = await client.post("/artifacts/art-1/revert")
+                "services.operation_dispatcher.dispatch",
+                return_value={"status": "reverted"},
+            ):
+                r = await client.post("/artifacts/art-1/op/revert", json={})
         finally:
             app.dependency_overrides.pop(get_arango_db, None)
-
         assert r.status_code == 200
-        assert r.json()["content"] == "last good"
-        # The router resolved the container from the unified-store
-        # `collection_id` field — NOT the legacy `workspace_id`.
-        assert svc.call_args.kwargs["workspace_id"] == "container-1"
-        assert svc.call_args.kwargs["artifact_id"] == "art-1"
 
 
 class TestMoveArtifact:

@@ -143,7 +143,8 @@ mcp = FastMCP(
         "synthesise evidence-backed answers, and project cards into external search indexes."
     ),
 )
-
+from artifact_helpers import register_types_manifest
+register_types_manifest(mcp, "sage", __file__)
 
 # ---------------------------------------------------------------------------
 # Tool: search � delegates to platform /search

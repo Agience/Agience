@@ -113,7 +113,7 @@ import { ButtonStyles, CardStateColors, TextColors } from '@/constants/colors';
 <button className={ButtonStyles.secondary}>Commit</button>
 
 // Use card state colors
-<div className={CardStateColors.new.bg}>...</div>
+<div className={CardStateColors.draft.bg}>...</div>
 ```
 
 ## Accessibility

@@ -185,7 +185,7 @@ When Core proxies a user request to an MCP server (e.g., a tool call), it issues
 **Flow:**
 
 ```
-Browser → Core: POST /agents/invoke (user JWT)
+Browser → Core: POST /artifacts/{id}/invoke (user JWT)
 Core → MCP Server: tools/call (delegation JWT in Authorization header)
 MCP Server: middleware verifies aud == self.client_id, stores in ContextVar
 MCP Server → Core: REST callback (delegation JWT in Authorization header)
@@ -232,28 +232,35 @@ Currently used by Seraph for credential management. Available to any server that
 
 ## Grants
 
-Grants are the authorization layer that controls collection (and workspace) access. A grant is a server-side record stored in ArangoDB that binds a principal (user, API key, or share token) to a resource with explicit permissions.
+Grants are the authorization layer that controls collection (and workspace) access. A grant is a server-side record stored in ArangoDB that binds a principal (user, API key, or invite) to a resource with explicit permissions.
 
 **Grant entity fields:**
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `resource_type` | `str` | `"collection"` (extensible) |
+| `resource_type` | `str` | `"artifact"` |
 | `resource_id` | `str` | The collection or workspace ID |
-| `grantee_type` | `str` | `"user"` \| `"api_key"` \| `"share_token"` |
-| `grantee_id` | `str` | User ID, API key ID, or hashed share token |
+| `grantee_type` | `str` | `"user"` \| `"api_key"` \| `"invite"` |
+| `grantee_id` | `str` | User ID, API key ID, or hashed invite token |
+| `can_create` | `bool` | Create permission |
 | `can_read` | `bool` | Read permission |
-| `can_write` | `bool` | Write permission |
+| `can_update` | `bool` | Update permission |
+| `can_delete` | `bool` | Delete permission |
+| `can_evict` | `bool` | Evict permission |
+| `can_add` | `bool` | Add permission |
+| `can_share` | `bool` | Share permission |
+| `can_invoke` | `bool` | Invoke permission |
+| `can_admin` | `bool` | Admin permission |
 | `requires_identity` | `bool` | If true, anonymous presenters are rejected |
 | `state` | `str` | `"active"` \| `"revoked"` \| `"pending_accept"` |
-| `granted_by` | `str` | User ID of the collection owner who issued the grant |
+| `granted_by` | `str` | User ID of the principal who issued the grant |
 | `expires_at` | `Optional[str]` | Null = no expiry |
 
-**Access check.** Every request touching a collection runs `check_collection_access()`. The fast path is owner identity (no grant lookup). Otherwise, the function resolves a grant by matching the principal's identifiers against active, non-expired grants on the requested collection. A 404 is returned for both "not found" and "no access" — security by obscurity for collection IDs.
+**Access check.** Every request touching a collection runs `check_access()` (from `services/dependencies.py`). All access requires explicit grant records; `created_by` is provenance only and does not imply ownership or access. The function resolves a grant by matching the principal's identifiers against active, non-expired grants on the requested resource. A 404 is returned for both "not found" and "no access" — security by obscurity for collection IDs.
 
 **Relation to API keys.** Authentication (who you are) and authorization (which collections you can reach) are decoupled. Revoking a grant removes collection access without invalidating the API key for other resources.
 
-**Share tokens.** When a collection is shared via a link, the platform issues a grant with `grantee_type="share_token"`. The raw token is shown once; only its hash is stored. The share link URL carries the raw token; the server resolves it to the grant on presentation.
+**Invite grants.** When a collection is shared via a link, the platform issues a grant with `grantee_type="invite"`. The raw token is shown once; only its hash is stored. The share link URL carries the raw token; the server resolves it to the grant on presentation.
 
 **First-login provisioning.** When a new user first logs in, platform collections (authority, inbox, etc.) are made accessible by automatically creating grants for the new user. This is handled by `seed_content_service.py`.
 

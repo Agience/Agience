@@ -5,16 +5,17 @@ This file covers the access mediator (`check_access`) and the platform-admin
 guard, both of which sit in front of every router and have heavy churn.
 
 Coverage:
-  - check_access action → CRUDIASO flag mapping (every action in _ACTION_FLAG_MAP)
+  - check_access action → CRUDEASIO flag mapping (every action in _ACTION_FLAG_MAP)
   - Unknown action → 400
   - artifact_id resolves to a Collection doc (workspace/regular)
   - artifact_id resolves to an Artifact doc → looks up its collection_id
   - artifact missing → 404
   - artifact with no collection_id → 404
   - collection missing → 404
-  - Owner fast-path returns synthetic full grant
+  - Creator with explicit grant passes (grant-based, not created_by fast-path)
   - Active grant on the collection returns that grant
   - No matching grant → 404 (security-by-obscurity)
+  - created_by alone does NOT grant access
   - require_platform_admin: missing user → 403
   - require_platform_admin: bootstrap operator fast-path
   - require_platform_admin: write grant on authority collection
@@ -69,7 +70,6 @@ def _arango_with(*, collection_doc=None, artifact_doc=None, child_collection_doc
 def _grant(**overrides) -> GrantEntity:
     return GrantEntity(
         id=overrides.get("id", "g-1"),
-        resource_type="collection",
         resource_id=overrides.get("resource_id", "col-1"),
         grantee_type=overrides.get("grantee_type", GrantEntity.GRANTEE_USER),
         grantee_id=overrides.get("grantee_id", "user-1"),
@@ -78,10 +78,11 @@ def _grant(**overrides) -> GrantEntity:
         can_read=overrides.get("can_read", False),
         can_update=overrides.get("can_update", False),
         can_delete=overrides.get("can_delete", False),
+        can_evict=overrides.get("can_evict", False),
         can_invoke=overrides.get("can_invoke", False),
         can_add=overrides.get("can_add", False),
-        can_search=overrides.get("can_search", False),
-        can_own=overrides.get("can_own", False),
+        can_share=overrides.get("can_share", False),
+        can_admin=overrides.get("can_admin", False),
         state="active",
     )
 
@@ -97,9 +98,10 @@ class TestActionMapping:
         assert ei.value.status_code == 400
         assert "Unknown action" in ei.value.detail
 
-    def test_action_map_covers_full_crudiaso(self):
+    def test_action_map_covers_full_crudeasio(self):
         assert set(_ACTION_FLAG_MAP) == {
-            "create", "read", "update", "delete", "invoke", "add", "search", "own"
+            "create", "read", "update", "delete", "evict",
+            "invoke", "add", "share", "admin",
         }
 
 
@@ -113,19 +115,30 @@ class TestIdResolution:
             collection_doc={"_key": "col-1", "created_by": "user-1"}
         )
         with patch(
-            "services.dependencies.db_get_active_grants", return_value=[]
+            "services.dependencies.db_get_active_grants",
+            return_value=[_grant(can_read=True)],
         ):
             grant = check_access(_user(), "col-1", "read", db)
-        # Owner fast-path → synthetic full grant.
         assert grant.can_read is True
         assert grant.resource_id == "col-1"
 
-    def test_artifact_id_resolves_via_collection_id(self):
+    def test_artifact_grant_cascades_via_origin_edge(self):
         db = _arango_with(
             artifact_doc={"_key": "art-1", "collection_id": "col-1"},
-            child_collection_doc={"_key": "col-1", "created_by": "user-1"},
+            child_collection_doc={"_key": "col-1"},
         )
-        grant = check_access(_user(), "art-1", "read", db)
+        # No direct grant on the artifact; grant on parent reached via origin edge
+        with patch(
+            "services.dependencies.db_get_active_grants",
+            side_effect=[
+                [],                           # direct grants on art-1
+                [_grant(can_read=True)],       # parent grants on col-1
+            ],
+        ), patch(
+            "services.dependencies.db_arango.get_origin_parent",
+            return_value=("col-1", None),     # origin edge: art-1 → col-1
+        ):
+            grant = check_access(_user(), "art-1", "read", db)
         assert grant.can_read is True
 
     def test_artifact_missing_returns_404(self):
@@ -155,24 +168,45 @@ class TestIdResolution:
 # ---------------------------------------------------------------------------
 
 class TestAuthorization:
-    def test_owner_gets_synthetic_full_grant(self):
+    def test_creator_with_explicit_grant_gets_full_access(self):
+        """Creator has explicit grant issued at creation time — not created_by fast-path."""
         db = _arango_with(
             collection_doc={"_key": "col-1", "created_by": "user-1"}
         )
-        grant = check_access(_user("user-1"), "col-1", "delete", db)
-        # Synthetic owner grant carries every flag.
+        full_grant = _grant(
+            can_create=True, can_read=True, can_update=True, can_delete=True,
+            can_evict=True, can_invoke=True, can_add=True, can_share=True, can_admin=True,
+        )
+        with patch(
+            "services.dependencies.db_get_active_grants",
+            return_value=[full_grant],
+        ):
+            grant = check_access(_user("user-1"), "col-1", "delete", db)
         assert all(
             getattr(grant, f) for f in (
                 "can_create",
                 "can_read",
                 "can_update",
                 "can_delete",
+                "can_evict",
                 "can_invoke",
                 "can_add",
-                "can_search",
-                "can_own",
+                "can_share",
+                "can_admin",
             )
         )
+
+    def test_created_by_alone_does_not_grant_access(self):
+        """created_by is provenance only — without an explicit grant, access is denied."""
+        db = _arango_with(
+            collection_doc={"_key": "col-1", "created_by": "user-1"}
+        )
+        with patch(
+            "services.dependencies.db_get_active_grants", return_value=[]
+        ):
+            with pytest.raises(HTTPException) as ei:
+                check_access(_user("user-1"), "col-1", "read", db)
+        assert ei.value.status_code == 404
 
     def test_non_owner_with_matching_grant_passes(self):
         db = _arango_with(
@@ -208,15 +242,12 @@ class TestAuthorization:
                 check_access(_user("user-2"), "col-1", "read", db)
         assert ei.value.status_code == 404
 
-    def test_anonymous_user_blocked_even_with_owner_match(self):
-        """`auth.user_id is None` cannot match the created_by even if created_by is None too."""
+    def test_anonymous_user_blocked(self):
+        """`auth.user_id is None` is always denied — grants require user identity."""
         db = _arango_with(collection_doc={"_key": "col-1", "created_by": None})
         anon = AuthContext(user_id=None, principal_id=None, principal_type="anonymous")
-        with patch(
-            "services.dependencies.db_get_active_grants", return_value=[]
-        ):
-            with pytest.raises(HTTPException) as ei:
-                check_access(anon, "col-1", "read", db)
+        with pytest.raises(HTTPException) as ei:
+            check_access(anon, "col-1", "read", db)
         assert ei.value.status_code == 404
 
 

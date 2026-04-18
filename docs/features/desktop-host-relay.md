@@ -17,10 +17,10 @@ The Desktop Host Relay lets the Agience cloud invoke MCP tools and access resour
 
 ```
 Browser
-  └── POST /mcp/tools/call  ──→  Cloud (policy enforcement)
-                                   └── invoke_tool  ──→  Desktop Host (WebSocket)
-                                                           └── executes tool locally
-                                                           └── returns tool_result
+  └── POST /artifacts/{server_id}/invoke  ──→  Cloud (policy enforcement)
+                                                └── invoke_tool  ──→  Desktop Host (WebSocket)
+                                                                        └── executes tool locally
+                                                                        └── returns tool_result
 ```
 
 **How it works:**

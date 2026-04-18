@@ -10,9 +10,11 @@ vi.mock('../api', () => ({
 
 import api from '../api';
 import {
+  __clearServerArtifactIdCacheForTests,
   listWorkspaceMCPServers,
   importMCPResources,
   readMCPResource,
+  proxyToolCall,
 } from '../mcp';
 
 const mockGet = api.get as ReturnType<typeof vi.fn>;
@@ -21,6 +23,7 @@ const mockPost = api.post as ReturnType<typeof vi.fn>;
 describe('api/mcp — listWorkspaceMCPServers', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    __clearServerArtifactIdCacheForTests();
   });
 
   it('calls GET /mcp/workspaces/:id/servers and returns server list', async () => {
@@ -66,9 +69,13 @@ describe('api/mcp — listWorkspaceMCPServers', () => {
 describe('api/mcp — importMCPResources (Phase 7D: artifact-native dispatch)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    __clearServerArtifactIdCacheForTests();
   });
 
-  it('posts to /artifacts/{server_id}/op/resources_import and returns canonical shape', async () => {
+  it('resolves a server name to a UUID before posting resources_import', async () => {
+    mockGet.mockResolvedValueOnce({
+      data: [{ server: '8ce77110-f1af-4ab3-86d8-f84305888008', name: 'Agience Core', tools: [], resources: [], status: 'ok' }],
+    });
     mockPost.mockResolvedValueOnce({ data: { created_artifact_ids: ['c1', 'c2'], count: 2 } });
 
     const resources = [
@@ -78,7 +85,7 @@ describe('api/mcp — importMCPResources (Phase 7D: artifact-native dispatch)', 
     const result = await importMCPResources('ws-123', 'agience-core', resources);
 
     expect(mockPost).toHaveBeenCalledWith(
-      '/artifacts/agience-core/op/resources_import',
+      '/artifacts/8ce77110-f1af-4ab3-86d8-f84305888008/op/resources_import',
       {
         workspace_id: 'ws-123',
         resources,
@@ -89,6 +96,9 @@ describe('api/mcp — importMCPResources (Phase 7D: artifact-native dispatch)', 
   });
 
   it('handles empty resource list (count: 0)', async () => {
+    mockGet.mockResolvedValueOnce({
+      data: [{ server: '8ce77110-f1af-4ab3-86d8-f84305888008', name: 'Agience Core', tools: [], resources: [], status: 'ok' }],
+    });
     mockPost.mockResolvedValueOnce({ data: { created_artifact_ids: [], count: 0 } });
 
     const result = await importMCPResources('ws-123', 'agience-core', []);
@@ -101,13 +111,17 @@ describe('api/mcp — importMCPResources (Phase 7D: artifact-native dispatch)', 
     mockPost.mockResolvedValueOnce({ data: { created_artifact_ids: ['c3'], count: 1 } });
 
     const resources = [{ id: 'r3', kind: 'document', uri: 'file://doc.txt', title: 'Doc' }];
-    await importMCPResources('ws-1', 'artifact-mcp-server-id', resources);
+    await importMCPResources('ws-1', '123e4567-e89b-42d3-a456-426614174000', resources);
 
     const url = mockPost.mock.calls[0][0];
-    expect(url).toBe('/artifacts/artifact-mcp-server-id/op/resources_import');
+    expect(url).toBe('/artifacts/123e4567-e89b-42d3-a456-426614174000/op/resources_import');
+    expect(mockGet).not.toHaveBeenCalled();
   });
 
   it('propagates import errors', async () => {
+    mockGet.mockResolvedValueOnce({
+      data: [{ server: '8ce77110-f1af-4ab3-86d8-f84305888008', name: 'Agience Core', tools: [], resources: [], status: 'ok' }],
+    });
     mockPost.mockRejectedValueOnce(new Error('Server unreachable'));
 
     await expect(
@@ -119,21 +133,25 @@ describe('api/mcp — importMCPResources (Phase 7D: artifact-native dispatch)', 
 describe('api/mcp — readMCPResource (Phase 7D: artifact-native dispatch)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    __clearServerArtifactIdCacheForTests();
   });
 
-  it('posts to /artifacts/{server_id}/op/resources_read with {uri, workspace_id}', async () => {
+  it('resolves the workspace server name to a UUID before resources_read', async () => {
     const contents = {
       uri: 'agience://collection/c1',
       name: 'My Collection',
       mimeType: 'application/json',
       text: '{"artifacts":[]}',
     };
+    mockGet.mockResolvedValueOnce({
+      data: [{ server: 'cf759fa7-1d53-4867-8c20-2c6d92fe4d0d', name: 'Seraph', tools: [], resources: [], status: 'ok' }],
+    });
     mockPost.mockResolvedValueOnce({ data: contents });
 
-    const result = await readMCPResource('agience-core', 'agience://collection/c1', 'ws-1');
+    const result = await readMCPResource('seraph', 'agience://collection/c1', 'ws-1');
 
     expect(mockPost).toHaveBeenCalledWith(
-      '/artifacts/agience-core/op/resources_read',
+      '/artifacts/cf759fa7-1d53-4867-8c20-2c6d92fe4d0d/op/resources_read',
       {
         uri: 'agience://collection/c1',
         workspace_id: 'ws-1',
@@ -149,20 +167,58 @@ describe('api/mcp — readMCPResource (Phase 7D: artifact-native dispatch)', () 
       data: { uri: 'external://doc', name: 'External Doc', mimeType: 'text/plain', text: 'content' },
     });
 
-    await readMCPResource('artifact-server-abc', 'external://doc', 'ws-1');
+    await readMCPResource('123e4567-e89b-42d3-a456-426614174001', 'external://doc', 'ws-1');
 
     const url = mockPost.mock.calls[0][0];
-    expect(url).toBe('/artifacts/artifact-server-abc/op/resources_read');
+    expect(url).toBe('/artifacts/123e4567-e89b-42d3-a456-426614174001/op/resources_read');
     const body = mockPost.mock.calls[0][1];
     expect(body.uri).toBe('external://doc');
+    expect(mockGet).not.toHaveBeenCalled();
   });
 
   it('propagates read errors', async () => {
+    mockGet.mockResolvedValueOnce({
+      data: [{ server: '8ce77110-f1af-4ab3-86d8-f84305888008', name: 'Agience Core', tools: [], resources: [], status: 'ok' }],
+    });
     mockPost.mockRejectedValueOnce(new Error('Resource not found'));
 
     await expect(
-      readMCPResource('agience-core', 'agience://missing')
+      readMCPResource('agience-core', 'agience://missing', 'ws-1')
     ).rejects.toThrow('Resource not found');
+  });
+
+  it('fails fast when a server reference cannot be resolved to a UUID', async () => {
+    mockGet.mockResolvedValueOnce({ data: [] });
+    mockGet.mockResolvedValueOnce({ data: [] });
+
+    await expect(
+      readMCPResource('unknown-server', 'agience://missing', 'ws-1')
+    ).rejects.toThrow("Unknown MCP server reference 'unknown-server'");
+
+    expect(mockPost).not.toHaveBeenCalled();
+  });
+});
+
+describe('api/mcp — proxyToolCall', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __clearServerArtifactIdCacheForTests();
+  });
+
+  it('resolves a server name to a UUID before invoke', async () => {
+    mockGet.mockResolvedValueOnce({
+      data: [{ server: '641e9cfb-2b57-4515-b912-9d0a07eb6225', name: 'Ophan', tools: [], resources: [], status: 'ok' }],
+    });
+    mockPost.mockResolvedValueOnce({ data: { content: [{ type: 'text', text: 'ok' }] } });
+
+    const result = await proxyToolCall('billing.get_portal', { invoice_id: 'inv-1' }, 'ophan', 'ws-1');
+
+    expect(mockPost).toHaveBeenCalledWith(
+      '/artifacts/641e9cfb-2b57-4515-b912-9d0a07eb6225/invoke',
+      { name: 'billing.get_portal', arguments: { invoice_id: 'inv-1' }, workspace_id: 'ws-1' },
+      { timeout: 0 },
+    );
+    expect(result.content[0]?.text).toBe('ok');
   });
 });
 

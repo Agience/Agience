@@ -11,9 +11,7 @@ import LoginProtected from './auth/LoginProtected';
 
 import Login from './pages/Login';
 import Privacy from './pages/Privacy';
-import Cookies from './pages/Cookies';
 import WorkspacePage from './pages/WorkspacePage';
-import CookieBanner from './components/common/CookieBanner';
 import Terms from './pages/Terms';
 import { WorkspaceProvider } from './context/workspace/WorkspaceProvider';
 import { CollectionsProvider } from './context/collections/CollectionsProvider';
@@ -27,6 +25,7 @@ const AuthCallback = lazy(() => import('./routes/AuthCallback'));
 const OAuthCallback = lazy(() => import('./pages/OAuthCallback'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 const SetupWizard = lazy(() => import('./pages/SetupWizard'));
+const InviteClaimPage = lazy(() => import('./pages/InviteClaimPage'));
 
 const Spinner = () => (
   <div className="min-h-screen flex items-center justify-center">
@@ -34,10 +33,10 @@ const Spinner = () => (
   </div>
 );
 
-// TODO: Migrate to invite claim flow. The X-Grant-Key header has been removed
-// from the backend; grant keys captured here are no longer sent as a header.
-// When the /grants/claim endpoint is ready, redirect ?grant_key=xxx to
-// /grants/claim?token=xxx instead of storing in sessionStorage.
+/**
+ * Captures legacy ?grant_key=xxx URLs and redirects to /invite/:token.
+ * The /invite claim page handles auth + claim + redirect.
+ */
 function GrantKeyCapture() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -46,29 +45,8 @@ function GrantKeyCapture() {
     const params = new URLSearchParams(location.search);
     const grantKey = params.get('grant_key');
     if (!grantKey) return;
-
-    try {
-      const raw = sessionStorage.getItem('grant_keys') ?? localStorage.getItem('grant_keys');
-      const existing = raw ? (JSON.parse(raw) as unknown) : [];
-      const asArray = Array.isArray(existing) ? existing.map(String).filter(Boolean) : [];
-      const next = [grantKey, ...asArray.filter((k) => k !== grantKey)].slice(0, 10);
-      sessionStorage.setItem('grant_keys', JSON.stringify(next));
-    } catch {
-      sessionStorage.setItem('grant_keys', JSON.stringify([grantKey]));
-    }
-
-    // Remove the secret from the URL.
-    params.delete('grant_key');
-    const search = params.toString();
-    navigate(
-      {
-        pathname: location.pathname,
-        search: search ? `?${search}` : '',
-        hash: location.hash,
-      },
-      { replace: true }
-    );
-  }, [location.pathname, location.search, location.hash, navigate]);
+    navigate(`/invite/${grantKey}`, { replace: true });
+  }, [location.search, navigate]);
 
   return null;
 }
@@ -143,7 +121,6 @@ function AppRoutes() {
         <Route path="/login" element={<Login />} />
         <Route path="/terms" element={<Terms />} />
         <Route path="/privacy" element={<Privacy />} />
-        <Route path="/cookies" element={<Cookies />} />
         <Route path="/auth/error" element={<Login />} />
         <Route
           path="/auth/callback"
@@ -162,7 +139,24 @@ function AppRoutes() {
           }
         />
 
+        <Route path="/invite/:token" element={
+          <Suspense fallback={<Spinner />}>
+            <InviteClaimPage />
+          </Suspense>
+        } />
+
         <Route path="/" element={
+          <LoginProtected>
+            <CollectionsProvider>
+              <WorkspacesProvider>
+                <WorkspaceProvider>
+                    <WorkspacePage />
+                  </WorkspaceProvider>
+              </WorkspacesProvider>
+            </CollectionsProvider>
+          </LoginProtected>
+        } />
+        <Route path="/:artifactId" element={
           <LoginProtected>
             <CollectionsProvider>
               <WorkspacesProvider>
@@ -217,7 +211,6 @@ export default function App() {
             <BrowserRouter>
               <GrantKeyCapture />
               <Toaster />
-              <CookieBanner />
               <KeyboardShortcutsDialog />
               <Suspense fallback={<Spinner />}>
                 <AppRoutes />

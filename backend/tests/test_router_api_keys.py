@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
+from core import config
 from main import app
 from services.dependencies import get_auth
 
@@ -103,7 +104,7 @@ class TestAPIKeys:
                 "services.dependencies.verify_token",
                 return_value={
                     "sub": "user-123",
-                    "aud": "http://localhost:8081",
+                    "aud": config.AUTHORITY_ISSUER,
                     "api_key_id": "key-123",
                     "scopes": ["resource:*:search"],
                 },

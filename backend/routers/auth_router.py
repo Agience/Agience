@@ -123,7 +123,6 @@ def _compute_roles(collection_db: StandardDatabase, user_id: str) -> list[str]:
         grants = db_get_active_grants(
             collection_db,
             grantee_id=user_id,
-            resource_type="collection",
             resource_id=get_id(AUTHORITY_COLLECTION_SLUG),
         )
         if any(g.can_update and g.is_active() for g in grants):
@@ -893,11 +892,15 @@ async def handle_client_credentials_grant(
                 status_code=401,
                 content={"error": "invalid_client", "error_description": "Invalid client_secret"},
             )
+        from services.platform_topology import get_id_optional
+        from services.bootstrap_types import HOST_ARTIFACT_SLUG
+
         server_claims = {
             "sub": f"server/{client_id}",
             "aud": "agience",
             "principal_type": "server",
             "authority": config.AUTHORITY_ISSUER,
+            "host_id": get_id_optional(HOST_ARTIFACT_SLUG) or "",
             "server_id": client_id,
             "client_id": client_id,
             "scopes": ["tool:*:invoke", "resource:*:read", "resource:*:list", "resource:*:search"],
@@ -1108,6 +1111,82 @@ async def unlink_provider(
 
     logger.info("Unlinked %s identity from user %s (%s)", provider, person.email, person.id)
     return updated.to_dict()
+
+
+class CompleteAuthorizerOAuthRequest(BaseModel):
+    """Payload for completing an upstream-OAuth flow against an Authorizer artifact."""
+    workspace_id: str
+    authorizer_artifact_id: str
+    authorization_code: str
+    code_verifier: str
+    redirect_uri: str
+
+
+@auth_router.post("/authorizer/complete-oauth")
+async def complete_authorizer_oauth_endpoint(
+    body: CompleteAuthorizerOAuthRequest,
+    auth: AuthContext = Depends(get_auth),
+    arango_db: StandardDatabase = Depends(get_arango_db),
+):
+    """Complete an upstream-OAuth flow for an Authorizer artifact.
+
+    Called from the frontend OAuth callback page after the user authorizes
+    with an upstream provider (e.g. Google). Exchanges the authorization
+    code for tokens via Seraph, which stores the refresh token.
+
+    This used to run through POST /agents/invoke with
+    ``operator="complete_authorizer_oauth"``. The /agents/invoke endpoint
+    is being retired; this dedicated endpoint replaces that hop.
+    """
+    if not auth.user_id:
+        raise HTTPException(status_code=401, detail="User identification required")
+
+    # Fetch the authorizer artifact to read its config.
+    from services import workspace_service, mcp_service, server_registry
+    artifact = workspace_service.get_workspace_artifact(
+        arango_db, auth.user_id, body.workspace_id, body.authorizer_artifact_id,
+    )
+    authorizer_config = getattr(artifact, "content", None) or "{}"
+    if not authorizer_config or authorizer_config == "{}":
+        try:
+            import json as _json
+            ctx_raw = getattr(artifact, "context", None) or "{}"
+            ctx = _json.loads(ctx_raw) if isinstance(ctx_raw, str) else ctx_raw
+            ck = ctx.get("content_key") if isinstance(ctx, dict) else None
+            if ck:
+                from services.content_service import get_text_direct
+                authorizer_config = get_text_direct(ck) or "{}"
+        except Exception:
+            authorizer_config = "{}"
+
+    # Short-lived JWT for Seraph to call GET /secrets on the user's behalf.
+    from services.auth_service import create_jwt_token
+    user_bearer_token = create_jwt_token({"sub": auth.user_id}, expires_hours=1)
+
+    try:
+        result = mcp_service.invoke_tool(
+            db=arango_db,
+            user_id=auth.user_id,
+            workspace_id=None,
+            server_artifact_id=server_registry.resolve_name_to_id("seraph"),
+            tool_name="complete_authorizer_oauth",
+            arguments={
+                "authorizer_config": authorizer_config,
+                "authorizer_artifact_id": body.authorizer_artifact_id,
+                "authorization_code": body.authorization_code,
+                "code_verifier": body.code_verifier,
+                "redirect_uri": body.redirect_uri,
+                "user_bearer_token": user_bearer_token,
+            },
+        )
+    except Exception as exc:
+        logger.error("OAuth completion failed (Seraph may be unavailable): %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail=f"OAuth completion service unavailable: {exc}",
+        )
+
+    return result
 
 
 @root_router.get("/.well-known/openid_configuration")

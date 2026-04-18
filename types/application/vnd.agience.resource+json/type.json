@@ -1,0 +1,48 @@
+{
+  "content_type": "application/vnd.agience.resource+json",
+  "version": 1,
+  "inherits": ["application/json"],
+  "description": "MCP Resource — a server-provided data source materialized as an artifact.",
+  "context_schema": {
+    "uri":         { "type": "string", "description": "MCP resource URI", "mutable": false },
+    "mime_type":   { "type": "string", "description": "Content MIME type of the resource", "mutable": false },
+    "description": { "type": "string", "description": "Human-readable description", "mutable": true },
+    "notes":       { "type": "string", "description": "User notes", "mutable": true }
+  },
+  "operations": {
+    "read": {
+      "enabled": true,
+      "requires_grant": "read",
+      "dispatch": { "kind": "artifact_crud" }
+    },
+    "update": {
+      "enabled": true,
+      "requires_grant": "update",
+      "dispatch": { "kind": "artifact_crud" },
+      "emits": [
+        { "event": "artifact.updated", "phase": "after" }
+      ]
+    },
+    "delete": {
+      "enabled": true,
+      "requires_grant": "delete",
+      "dispatch": { "kind": "artifact_crud" },
+      "emits": [
+        { "event": "artifact.deleted", "phase": "after" }
+      ]
+    }
+  },
+  "ui": {
+    "label": "Resource",
+    "icon": "database",
+    "color": "#10b981",
+    "badge_class": "bg-emerald-100 text-emerald-800",
+    "tile_class": "",
+    "modes": ["floating", "preview"],
+    "states": ["view"],
+    "default_mode": "preview",
+    "default_state": "view",
+    "is_container": false,
+    "creatable": false
+  }
+}

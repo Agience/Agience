@@ -80,6 +80,8 @@ If the type lives on a first-party server, place these files under `servers/<nam
 
 ### Step 2: Create the viewer component
 
+> **Note:** The bundled viewer path (`frontend/src/content-types/`) is transitional. New content types should provide viewers as `ui://` resources on MCP servers.
+
 For bundled delivery, add `frontend/src/content-types/<category>/<subtype>/viewer.tsx`:
 
 ```tsx

@@ -17,9 +17,7 @@ from db.arango import (
     create_grant,
     get_grant_by_id,
     update_grant,
-    get_active_grants_for_principal_resource as db_get_active_grants,
 )
-from services.auth_service import hash_api_key
 from entities.grant import Grant as GrantEntity
 
 logger = logging.getLogger(__name__)
@@ -37,16 +35,15 @@ class ClaimInviteRequest(BaseModel):
 
 class CreateGrantRequest(BaseModel):
     resource_id: str
-    resource_type: str = "collection"
-    # CRUDIASO
+    # CRUDEASIO
     can_create: bool = False
     can_read: bool = True
     can_update: bool = False
     can_delete: bool = False
     can_invoke: bool = False
     can_add: bool = False
-    can_search: bool = False
-    can_own: bool = False
+    can_share: bool = False
+    can_admin: bool = False
     # Invite targeting (optional — makes this an invite grant)
     grantee_type: str = "user"              # "user" | "invite"
     grantee_id: Optional[str] = None        # user_id for direct grant; omit for invite
@@ -58,6 +55,12 @@ class CreateGrantRequest(BaseModel):
     notes: Optional[str] = None
     expires_at: Optional[str] = None
     state: str = "active"
+    # Named role preset shortcut. When set, overrides individual CRUDEASIO
+    # flags (which become defaults). Grant-service is the source of truth
+    # for what each role maps to.
+    role: Optional[str] = None
+    # Personal message included in the invite email (invite grants only).
+    message: Optional[str] = None
 
 
 
@@ -75,141 +78,153 @@ def _grant_response(grant: GrantEntity) -> dict:
     return grant.to_dict()
 
 
-def _require_owner_or_can_own(
+def _require_admin(
     auth: AuthContext,
     resource_id: str,
-    resource_type: str,
     arango_db: StandardDatabase,
 ) -> None:
-    """Raise 403 unless the caller owns the resource or has can_own."""
-    # Try to find the resource document and check ownership.
-    try:
-        coll = arango_db.collection("artifacts")
-        doc = coll.get(resource_id)
-        if doc:
-            owner_id = doc.get("created_by")
-            if owner_id and auth.user_id and owner_id == auth.user_id:
-                return  # owner — allowed
-    except Exception:
-        pass
+    """Raise 403 unless the caller can manage grants on the resource.
 
-    # Not the owner — check for can_own grant.
-    if auth.user_id:
-        grants = db_get_active_grants(
-            arango_db,
-            grantee_id=auth.user_id,
-            resource_type=resource_type,
-            resource_id=resource_id,
+    Used for: listing all grants, revoking arbitrary grants, creating
+    direct user→user grants. Delegates to ``grant_service.can_admin``.
+    """
+    from services import grant_service
+    if not auth.user_id:
+        raise HTTPException(status_code=401, detail="User identification required")
+    if not grant_service.can_admin(arango_db, auth.user_id, resource_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the resource creator or an admin can manage grants",
         )
-        for g in grants:
-            if getattr(g, "can_own", False) and g.is_active():
-                return
 
-    raise HTTPException(status_code=403, detail="Only the resource owner can manage grants")
+
+def _require_share_or_admin(
+    auth: AuthContext,
+    resource_id: str,
+    arango_db: StandardDatabase,
+) -> None:
+    """Raise 403 unless the caller can create invites on the resource.
+
+    Invite creation is a lower bar than full grant management ---
+    collaborators with ``can_share`` (S in CRUDEASIO) can invite new
+    people without needing ``can_admin``. Delegates to
+    ``grant_service.can_share``.
+    """
+    from services import grant_service
+    if not auth.user_id:
+        raise HTTPException(status_code=401, detail="User identification required")
+    if not grant_service.can_share(arango_db, auth.user_id, resource_id):
+        raise HTTPException(
+            status_code=403,
+            detail="You need share or admin permission on this resource",
+        )
 
 
 # =============================================================================
 # Endpoints
 # =============================================================================
 
+# ---------- GET /grants/invite-context — Pre-auth invite context ----------
+
+@router.get("/invite-context")
+async def get_invite_context_endpoint(
+    token: str = Query(..., description="Raw invite claim token"),
+    arango_db: StandardDatabase = Depends(get_arango_db),
+):
+    """Return non-PII metadata about an invite.
+
+    Safe to call pre-auth. The claim page uses this to decide whether to
+    prompt for sign-in. Returns 404 if the token doesn't resolve to an
+    active invite; otherwise returns ``{valid, has_target, target_type}``
+    with no inviter identity or resource name.
+    """
+    from services import grant_service
+    ctx = grant_service.get_invite_context(arango_db, token)
+    if not ctx:
+        raise HTTPException(status_code=404, detail="Invite not found or expired")
+    return ctx
+
+
+# ---------- GET /grants/invite-details — Post-auth invite details ----------
+
+@router.get("/invite-details")
+async def get_invite_details_endpoint(
+    token: str = Query(..., description="Raw invite claim token"),
+    auth: AuthContext = Depends(get_auth),
+    arango_db: StandardDatabase = Depends(get_arango_db),
+):
+    """Return full invite details after verifying caller identity.
+
+    Requires authentication. Returns inviter + resource info only when the
+    caller matches the invite's target identity (if set). A target mismatch
+    returns ``{valid, identity_mismatch: True}`` without leaking PII.
+    """
+    if not auth.user_id:
+        raise HTTPException(status_code=401, detail="User identification required")
+    from services import grant_service
+    details = grant_service.get_invite_details(arango_db, token, auth.user_id)
+    if not details:
+        raise HTTPException(status_code=404, detail="Invite not found or expired")
+    return details
+
+
+# ---------- GET /grants/mine-sent — Invites I've sent ----------
+
+@router.get("/mine-sent")
+async def list_invites_sent_endpoint(
+    include_revoked: bool = Query(
+        False, description="Include revoked / exhausted invites in the result.",
+    ),
+    auth: AuthContext = Depends(get_auth),
+    arango_db: StandardDatabase = Depends(get_arango_db),
+):
+    """List invite grants the caller has created.
+
+    Used by the UI to show a "pending invites" list with revoke affordances.
+    Only returns invites where the caller is ``granted_by``; the actual
+    claim token is never exposed (only the hash lives in the grant).
+    """
+    if not auth.user_id:
+        raise HTTPException(status_code=401, detail="User identification required")
+
+    from services import grant_service
+    grants = grant_service.list_invites_sent(
+        arango_db, auth.user_id, include_revoked=include_revoked,
+    )
+    return [_grant_response(g) for g in grants]
+
+
 # ---------- POST /grants/claim — Claim an invite ----------
 
 @router.post("/claim", status_code=status.HTTP_201_CREATED)
-async def claim_invite(
+async def claim_invite_endpoint(
     body: ClaimInviteRequest,
     auth: AuthContext = Depends(get_auth),
     arango_db: StandardDatabase = Depends(get_arango_db),
 ):
-    """Claim an invite grant by presenting the raw invite token."""
+    """Claim an invite grant by presenting the raw invite token.
+
+    Delegates to :func:`grant_service.claim_invite` and maps service
+    exceptions to HTTP status codes. The service enforces the identity
+    match, so forwarded links cannot be claimed by the wrong recipient.
+    """
     if not auth.user_id:
         raise HTTPException(status_code=401, detail="User identification required")
 
-    # 1. Hash the presented token.
-    token_hash = hash_api_key(body.token)
-
-    # 2. Look up the invite grant by grantee_id (the hash).
-    #    The grant's _key may not be the hash, so search by grantee_id + type.
-    from db.arango import get_active_grants_for_grantee
-    candidates = get_active_grants_for_grantee(arango_db, token_hash, "invite")
-    if not candidates:
-        raise HTTPException(status_code=404, detail="Invite not found or expired")
-    invite = candidates[0]
-
-    if invite.grantee_type != GrantEntity.GRANTEE_INVITE:
-        raise HTTPException(status_code=400, detail="Not an invite grant")
-
-    if invite.state != GrantEntity.STATE_ACTIVE:
-        raise HTTPException(status_code=410, detail="Invite is no longer active")
-
-    # 3. If target_entity is set, verify the claimant matches.
-    if invite.target_entity and invite.target_entity_type:
-        match = False
-        if invite.target_entity_type == "user_id":
-            match = auth.user_id == invite.target_entity
-        elif invite.target_entity_type == "email":
-            # Look up the user's email from their person record.
-            try:
-                from services.person_service import get_user_by_id
-                person = get_user_by_id(db=arango_db, id=auth.user_id)
-                if person and getattr(person, "email", None):
-                    match = person.email.lower() == invite.target_entity.lower()
-            except Exception:
-                pass
-        elif invite.target_entity_type == "domain":
-            try:
-                from services.person_service import get_user_by_id
-                person = get_user_by_id(db=arango_db, id=auth.user_id)
-                if person and getattr(person, "email", None):
-                    match = person.email.lower().endswith("@" + invite.target_entity.lower())
-            except Exception:
-                pass
-
-        if not match:
-            raise HTTPException(status_code=403, detail="You are not the intended recipient of this invite")
-
-    # 4. If max_claims is set and claims_count >= max_claims, reject.
-    if invite.max_claims is not None and invite.claims_count >= invite.max_claims:
-        raise HTTPException(status_code=410, detail="Invite has reached its claim limit")
-
-    # 5. Create a new user grant with the same permissions.
-    now = _now_iso()
-    new_grant = GrantEntity(
-        id=str(uuid.uuid4()),
-        resource_type=invite.resource_type,
-        resource_id=invite.resource_id,
-        grantee_type=GrantEntity.GRANTEE_USER,
-        grantee_id=auth.user_id,
-        granted_by=invite.granted_by,
-        can_create=invite.can_create,
-        can_read=invite.can_read,
-        can_update=invite.can_update,
-        can_delete=invite.can_delete,
-        can_invoke=invite.can_invoke,
-        can_add=invite.can_add,
-        can_search=invite.can_search,
-        can_own=invite.can_own,
-        requires_identity=True,
-        state=GrantEntity.STATE_ACTIVE,
-        name=invite.name,
-        notes=f"Claimed from invite {invite.id}",
-        granted_at=now,
-        expires_at=invite.expires_at,
-        created_time=now,
-        modified_time=now,
+    from services import grant_service
+    from services.grant_service import (
+        InviteNotFound,
+        InviteExhausted,
+        InviteIdentityMismatch,
     )
-    created = create_grant(arango_db, new_grant)
-
-    # 6. Increment claims_count on the invite.
-    invite.claims_count += 1
-    invite.modified_time = now
-
-    # 7. If max_claims == 1, auto-revoke the invite.
-    if invite.max_claims == 1:
-        invite.state = GrantEntity.STATE_REVOKED
-        invite.revoked_at = now
-        invite.revoked_by = auth.user_id
-
-    update_grant(arango_db, invite)
+    try:
+        created = grant_service.claim_invite(arango_db, auth.user_id, body.token)
+    except InviteIdentityMismatch as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except InviteExhausted as exc:
+        raise HTTPException(status_code=410, detail=str(exc))
+    except InviteNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
     return _grant_response(created)
 
@@ -219,26 +234,17 @@ async def claim_invite(
 @router.get("")
 async def list_grants_endpoint(
     resource_id: str = Query(..., description="Resource ID to list grants for"),
-    resource_type: str = Query("collection", description="Resource type"),
     auth: AuthContext = Depends(get_auth),
     arango_db: StandardDatabase = Depends(get_arango_db),
 ):
-    """List all grants on a resource. Only the resource owner (or can_own) can list."""
+    """List all grants on a resource. Only the resource owner (or can_admin) can list."""
     if not auth.user_id:
         raise HTTPException(status_code=401, detail="User identification required")
 
-    _require_owner_or_can_own(auth, resource_id, resource_type, arango_db)
+    _require_admin(auth, resource_id, arango_db)
 
-    from db.arango import get_grants_for_collection, query_documents, COLLECTION_GRANTS
-    from entities.grant import Grant as GrantEntity
-
-    if resource_type == "collection":
-        grants = get_grants_for_collection(arango_db, resource_id)
-    else:
-        grants = query_documents(
-            arango_db, GrantEntity, COLLECTION_GRANTS,
-            {"resource_type": resource_type, "resource_id": resource_id},
-        )
+    from db.arango import get_grants_for_collection
+    grants = get_grants_for_collection(arango_db, resource_id)
 
     return [_grant_response(g) for g in grants]
 
@@ -253,27 +259,65 @@ async def create_grant_endpoint(
 ):
     """Create a new grant or invite.
 
-    Only the resource owner (or someone with can_own) can create grants.
+    Permission model:
+    - Creating an **invite grant** (``grantee_type == "invite"``) only
+      needs ``can_share`` or ``can_admin`` (or creator). This lets
+      collaborators invite others without full grant management.
+    - Creating a **direct user→user grant** still needs ``can_admin``
+      (or creator), since it bypasses the claim flow and target-identity
+      verification.
     """
     if not auth.user_id:
         raise HTTPException(status_code=401, detail="User identification required")
 
-    _require_owner_or_can_own(auth, body.resource_id, body.resource_type, arango_db)
+    # Invite grants go through the service: it handles token generation,
+    # role-preset resolution, email delivery, and event emission in one
+    # place so the MCP share tool and this endpoint stay in lockstep.
+    if body.grantee_type == GrantEntity.GRANTEE_INVITE:
+        _require_share_or_admin(auth, body.resource_id, arango_db)
+        from services import grant_service
+
+        # Resolve the target email. Prefer explicit target_entity when the
+        # client set target_entity_type=email; otherwise require body.role
+        # for a named preset.
+        target_email = None
+        if (body.target_entity_type or "").lower() == "email":
+            target_email = body.target_entity
+
+        # If no role was given, synthesize one from the CRUDEASIO bits on
+        # the body by matching against known presets. Otherwise fall back
+        # to "viewer". Keeps legacy callers working.
+        role = body.role or _role_from_bits(body) or "viewer"
+
+        try:
+            created, raw_token = grant_service.create_invite(
+                arango_db,
+                user_id=auth.user_id,
+                resource_id=body.resource_id,
+                role=role,
+                target_email=target_email,
+                max_claims=body.max_claims if body.max_claims is not None else 1,
+                name=body.name,
+                notes=body.notes,
+                expires_at=body.expires_at,
+                message=body.message,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        response = _grant_response(created)
+        response["claim_token"] = raw_token
+        response["claim_url"] = grant_service.build_claim_url(raw_token)
+        return response
+
+    # Direct user->user grant: still requires can_admin on the resource.
+    _require_admin(auth, body.resource_id, arango_db)
 
     now = _now_iso()
-
-    # For invite grants, generate a claim token if no grantee_id is provided.
     grantee_id = body.grantee_id or ""
-    raw_token: Optional[str] = None
-
-    if body.grantee_type == GrantEntity.GRANTEE_INVITE and not grantee_id:
-        import secrets
-        raw_token = f"agc_{secrets.token_urlsafe(32)}"
-        grantee_id = hash_api_key(raw_token)
 
     grant = GrantEntity(
         id=str(uuid.uuid4()),
-        resource_type=body.resource_type,
         resource_id=body.resource_id,
         grantee_type=body.grantee_type,
         grantee_id=grantee_id,
@@ -284,8 +328,8 @@ async def create_grant_endpoint(
         can_delete=body.can_delete,
         can_invoke=body.can_invoke,
         can_add=body.can_add,
-        can_search=body.can_search,
-        can_own=body.can_own,
+        can_share=body.can_share,
+        can_admin=body.can_admin,
         requires_identity=body.requires_identity,
         target_entity=body.target_entity,
         target_entity_type=body.target_entity_type,
@@ -300,13 +344,32 @@ async def create_grant_endpoint(
     )
 
     created = create_grant(arango_db, grant)
-    response = _grant_response(created)
+    return _grant_response(created)
 
-    # Include the raw claim token in the response (only on creation).
-    if raw_token:
-        response["claim_token"] = raw_token
 
-    return response
+def _role_from_bits(body: CreateGrantRequest) -> Optional[str]:
+    """Best-effort reverse-map from CRUDEASIO bits on the request to a role.
+
+    Exact-match against ``Grant.ROLE_PRESETS`` so legacy callers that send
+    individual flags (rather than a ``role`` string) still hit the same
+    preset and its associated email copy.
+    """
+    actual = {
+        "can_create": body.can_create,
+        "can_read": body.can_read,
+        "can_update": body.can_update,
+        "can_delete": body.can_delete,
+        "can_invoke": body.can_invoke,
+        "can_add": body.can_add,
+        "can_share": body.can_share,
+        "can_admin": body.can_admin,
+    }
+    enabled = {k for k, v in actual.items() if v}
+    for role_name, preset in GrantEntity.ROLE_PRESETS.items():
+        preset_enabled = {k for k, v in preset.items() if v}
+        if enabled == preset_enabled:
+            return role_name
+    return None
 
 
 # ---------- GET /grants/{grant_id} — Read a grant ----------
@@ -325,13 +388,13 @@ async def read_grant(
     if not grant:
         raise HTTPException(status_code=404, detail="Grant not found")
 
-    # Visible to: the grantee, the granter, or someone with can_own on the resource.
+    # Visible to: the grantee, the granter, or someone with can_admin on the resource.
     is_grantee = grant.grantee_id == auth.user_id
     is_granter = grant.granted_by == auth.user_id
     if not is_grantee and not is_granter:
-        # Check can_own on the resource.
+        # Check can_admin on the resource.
         try:
-            _require_owner_or_can_own(auth, grant.resource_id, grant.resource_type, arango_db)
+            _require_admin(auth, grant.resource_id, arango_db)
         except HTTPException:
             raise HTTPException(status_code=404, detail="Grant not found")
 
@@ -360,10 +423,14 @@ async def revoke_grant(
     if not grant:
         raise HTTPException(status_code=404, detail="Grant not found")
 
-    # Only granter or resource owner can revoke.
-    is_granter = grant.granted_by == auth.user_id
-    if not is_granter:
-        _require_owner_or_can_own(auth, grant.resource_id, grant.resource_type, arango_db)
+    # Granters may only revoke their own *pending invites* (grantee_type == "invite").
+    # Revoking a claimed/accepted user grant requires can_admin (O).
+    is_revocable_invite = (
+        grant.granted_by == auth.user_id
+        and grant.grantee_type == GrantEntity.GRANTEE_INVITE
+    )
+    if not is_revocable_invite:
+        _require_admin(auth, grant.resource_id, arango_db)
 
     now = _now_iso()
     grant.state = GrantEntity.STATE_REVOKED

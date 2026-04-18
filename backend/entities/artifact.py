@@ -41,7 +41,6 @@ class Artifact(BaseEntity):
         created_time: Optional[str] = None,
         modified_by: Optional[str] = None,
         modified_time: Optional[str] = None,
-        slug: Optional[str] = None,
         # Container fields (optional — only set on container artifacts)
         name: Optional[str] = None,
         description: Optional[str] = None,
@@ -61,17 +60,9 @@ class Artifact(BaseEntity):
         self.state = state
         self.created_by = created_by
         self.modified_by = modified_by
-        self.slug = slug
         self.name = name
         self.description = description
         self.content_type = content_type
-
-    # ------------------------------------------------------------------ #
-    # Container helpers
-    # ------------------------------------------------------------------ #
-
-    def is_container(self) -> bool:
-        return self.content_type in (WORKSPACE_CONTENT_TYPE, COLLECTION_CONTENT_TYPE)
 
     # ------------------------------------------------------------------ #
     # Serialization
@@ -90,8 +81,6 @@ class Artifact(BaseEntity):
             "modified_by": self.modified_by,
             "modified_time": self.modified_time,
         }
-        if self.slug is not None:
-            d["slug"] = self.slug
         if self.name is not None:
             d["name"] = self.name
         if self.description is not None:
@@ -113,7 +102,6 @@ class Artifact(BaseEntity):
             created_time=data.get("created_time"),
             modified_by=data.get("modified_by"),
             modified_time=data.get("modified_time"),
-            slug=data.get("slug"),
             name=data.get("name"),
             description=data.get("description"),
             content_type=data.get("content_type"),

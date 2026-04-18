@@ -9,7 +9,7 @@ import { post } from '@/api/api';
  * Flow:
  *   1. Parse `code` + `state` (nonce) from URL params.
  *   2. Retrieve PKCE `code_verifier` + artifact context from sessionStorage.
- *   3. POST /agents/invoke with operator="complete_authorizer_oauth".
+ *   3. POST /auth/authorizer/complete-oauth to finish the exchange.
  *   4. Show success → navigate back to workspace.
  */
 export default function OAuthCallback() {
@@ -60,17 +60,13 @@ export default function OAuthCallback() {
 
     const redirectUri = `${window.location.origin}/oauth/callback`;
 
-    // Call the backend operator to complete the OAuth exchange
-    post('/agents/invoke', {
-      operator: 'complete_authorizer_oauth',
+    // Complete the upstream OAuth exchange via the dedicated auth endpoint.
+    post('/auth/authorizer/complete-oauth', {
       workspace_id: stored.workspace_id,
-      params: {
-        workspace_id: stored.workspace_id,
-        authorizer_artifact_id: stored.authorizer_artifact_id,
-        authorization_code: code,
-        code_verifier: stored.code_verifier,
-        redirect_uri: redirectUri,
-      },
+      authorizer_artifact_id: stored.authorizer_artifact_id,
+      authorization_code: code,
+      code_verifier: stored.code_verifier,
+      redirect_uri: redirectUri,
     })
       .then(() => {
         setStatus('success');

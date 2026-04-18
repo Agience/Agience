@@ -33,7 +33,7 @@ def _call(user_id: str = "user-1", **kwargs):
 
 def _artifact(
     aid: str = "a-1",
-    slug: str = "decisions",
+    name: str = "decisions",
     content: str = "some content",
     context: str = '{"type":"memory"}',
     state: str = "draft",
@@ -42,7 +42,7 @@ def _artifact(
     return ArtifactEntity(
         id=aid,
         root_id=aid,
-        slug=slug,
+        name=name,
         collection_id=collection_id,
         context=context,
         content=content,
@@ -107,12 +107,12 @@ class TestMemoryRead:
 
 class TestMemoryWrite:
     @patch("services.workspace_service.create_workspace_artifact")
-    @patch("db.arango.find_artifact_by_slug_in_collection", return_value=None)
+    @patch("db.arango.find_artifact_by_name_in_collection", return_value=None)
     @patch("services.workspace_service.resolve_binding", return_value="col-mem")
     @patch("mcp_server.server._get_arango")
     def test_write_creates_new(self, mock_arango, mock_resolve, mock_find, mock_create):
         mock_arango.return_value = MagicMock()
-        created = _artifact(aid="a-new", slug="notes")
+        created = _artifact(aid="a-new", name="notes")
         mock_create.return_value = created
         result = _call(
             workspace_id="ws-1", command="write",
@@ -124,14 +124,14 @@ class TestMemoryWrite:
         mock_create.assert_called_once()
 
     @patch("services.workspace_service.update_artifact")
-    @patch("db.arango.find_artifact_by_slug_in_collection")
+    @patch("db.arango.find_artifact_by_name_in_collection")
     @patch("services.workspace_service.resolve_binding", return_value="col-mem")
     @patch("mcp_server.server._get_arango")
     def test_write_updates_existing(self, mock_arango, mock_resolve, mock_find, mock_update):
         mock_arango.return_value = MagicMock()
-        existing = _artifact(aid="a-1", slug="decisions")
+        existing = _artifact(aid="a-1", name="decisions")
         mock_find.return_value = existing
-        updated = _artifact(aid="a-1", slug="decisions", content="updated")
+        updated = _artifact(aid="a-1", name="decisions", content="updated")
         mock_update.return_value = updated
         result = _call(
             workspace_id="ws-1", command="write",
@@ -168,12 +168,12 @@ class TestMemoryList:
 
 class TestMemoryDelete:
     @patch("services.workspace_service.update_artifact")
-    @patch("db.arango.find_artifact_by_slug_in_collection")
+    @patch("db.arango.find_artifact_by_name_in_collection")
     @patch("services.workspace_service.resolve_binding", return_value="col-mem")
     @patch("mcp_server.server._get_arango")
     def test_delete_archives(self, mock_arango, mock_resolve, mock_find, mock_update):
         mock_arango.return_value = MagicMock()
-        art = _artifact(aid="a-1", slug="old-notes")
+        art = _artifact(aid="a-1", name="old-notes")
         mock_find.return_value = art
         mock_update.return_value = art
         result = _call(workspace_id="ws-1", command="delete", key="old-notes")

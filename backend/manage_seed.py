@@ -160,7 +160,7 @@ def action_revoke(db: StandardDatabase, user_id: str, dry_run: bool) -> None:
 
     col_id = get_id(INBOX_SEEDS_COLLECTION_SLUG)
     grants = get_active_grants_for_principal_resource(
-        db, grantee_id=user_id, resource_type="collection", resource_id=col_id
+        db, grantee_id=user_id, resource_id=col_id
     )
     if not grants:
         logger.info("No active grant for user=%s  collection=%s -- nothing to revoke.", user_id, col_id)

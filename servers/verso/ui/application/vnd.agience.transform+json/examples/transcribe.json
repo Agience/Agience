@@ -4,7 +4,6 @@
   "description": "Transcribe any video or audio artifact into a text/markdown transcript using AWS Transcribe.",
   "run": {
     "type": "mcp-tool",
-    "server": "verso",
     "tool": "transcribe_artifact",
     "input_mapping": {
       "workspace_id": "$.workspace_id",

@@ -100,8 +100,7 @@ All paths in the OpenAPI spec are relative to the base URL. The spec itself is a
 | Router | Path prefix | Purpose |
 |--------|------------|---------|
 | `auth_router` | `/auth` | OAuth2 login, token exchange, JWKS |
-| `artifacts_router` | `/artifacts`, `/workspaces`, `/collections`, `/search` | Unified artifact API — CRUD, invoke, op dispatch, upload, commit, search. Replaces the retired `workspaces_router`, `collections_router`, and `search_router`. |
-| `agents_router` | `/agents` | `POST /agents/invoke` — unified agent and Operator invocation |
+| `artifacts_router` | `/artifacts`, `/workspaces`, `/collections`, `/search` | Unified artifact API — CRUD, invoke (`POST /artifacts/{id}/invoke`), op dispatch, upload, commit, search. All execution (agents, tools, servers, operators) routes through artifact invoke. Replaces the retired `workspaces_router`, `collections_router`, `agents_router`, and `search_router`. |
 | `mcp_router` | `/mcp` | MCP client live discovery (list servers). Tool invocation and resource ops flow through the generic `POST /artifacts/{server_id}/invoke` and `/artifacts/{server_id}/op/{op_name}` dispatch endpoints. |
 | `api_keys_router` | `/api-keys` | Scoped API key lifecycle (create, list, revoke, exchange) |
 | `secrets_router` | `/secrets` | Encrypted credential CRUD |

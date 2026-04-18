@@ -102,7 +102,6 @@ def _ensure_seed_collection(
             created_by=AGIENCE_PLATFORM_USER_ID,
             content_type=COLLECTION_CONTENT_TYPE,
             state=CollectionEntity.STATE_COMMITTED,
-            slug=col_slug,
             created_time=now,
             modified_time=now,
         )

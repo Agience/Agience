@@ -49,7 +49,7 @@ The platform ships with eight purpose-built MCP servers covering ingestion, retr
 | Kernel services | Core platform |
 | Peripheral drivers | Agent persona servers |
 | Third-party applications | External MCP servers |
-| Processes / jobs | Agents / transforms |
+| Processes / jobs | Agents / Operators |
 | System calls | MCP tool calls |
 | Filesystem indexer | OpenSearch |
 | Capability-based access | Scoped API keys |

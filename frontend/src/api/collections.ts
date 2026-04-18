@@ -50,14 +50,14 @@ export function deleteCollection(id: string): Promise<void> {
 
 // grants — now calling /grants endpoints
 export function listGrants(collectionId: string): Promise<GrantResponse[]> {
-  return get(`/grants?resource_id=${encodeURIComponent(collectionId)}&resource_type=collection`);
+  return get(`/grants?resource_id=${encodeURIComponent(collectionId)}`);
 }
 
 export function createGrant(
   collectionId: string,
-  input: Omit<GrantCreate, 'resource_id' | 'resource_type'>
+  input: Omit<GrantCreate, 'resource_id'>
 ): Promise<GrantResponse> {
-  return post('/grants', { resource_id: collectionId, resource_type: 'collection', ...input });
+  return post('/grants', { resource_id: collectionId, ...input });
 }
 
 export function updateGrant(

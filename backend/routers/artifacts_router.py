@@ -18,13 +18,13 @@
 #   PATCH  /artifacts/{id}/upload-status       → Update upload progress
 #   GET    /artifacts/{id}/multipart-part-url  → Presigned URL for upload part
 #   GET    /artifacts/{id}/content-url         → Signed content URL
-#   POST   /artifacts/{container_id}/commit    → Commit workspace to collections
-#   POST   /artifacts/{container_id}/commit/preview → Preview commit (dry run)
-#   POST   /artifacts/{id}/revert              → Revert to last committed version
 #   PATCH  /artifacts/{container_id}/order      → Reorder workspace artifacts
 #   POST   /artifacts/{id}/move                → Move artifact between workspaces
 #   POST   /artifacts/batch                    → Batch fetch by IDs
 #   GET    /artifacts/{container_id}/commits    → List commits for collection
+#
+# Type-dispatched operations (via POST /artifacts/{id}/op/{op_name}):
+#   commit, commit_preview, revert — dispatched per type.json operations block
 #
 # Real-time event subscription is handled by the unified /events WebSocket
 # (see routers/events_router.py), not a per-container SSE endpoint.
@@ -35,12 +35,14 @@ import uuid
 from typing import Any, Dict, List, Literal, Optional
 
 from arango.database import StandardDatabase
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 from pydantic.functional_serializers import SerializerFunctionWrapHandler
 
 from core.dependencies import get_arango_db
-from entities.collection import WORKSPACE_CONTENT_TYPE, COLLECTION_CONTENT_TYPE
+from entities.collection import WORKSPACE_CONTENT_TYPE
+import db.arango as arango
+from db.arango import has_children as db_has_children, count_children as db_count_children
 from services.dependencies import (
     get_auth,
     AuthContext,
@@ -58,22 +60,9 @@ class CreateArtifactRequest(BaseModel):
     """Create a new artifact inside a container."""
     container_id: str
     source_artifact_id: Optional[str] = None  # copy content/context from this artifact
-    slug: Optional[str] = None
     context: Optional[str] = None       # JSON string
     content: Optional[str] = None
     content_type: Optional[str] = None
-
-
-class CreateContainerRequest(BaseModel):
-    """Create a new container artifact (workspace or collection).
-
-    The container type is determined entirely by ``content_type``:
-      - ``application/vnd.agience.workspace+json`` → workspace
-      - ``application/vnd.agience.collection+json`` → collection
-    """
-    content_type: str
-    name: Optional[str] = None
-    description: Optional[str] = ""
 
 
 class UpdateArtifactRequest(BaseModel):
@@ -180,14 +169,15 @@ class ArtifactSearchResponse(BaseModel):
 # Unified artifact store: containers and artifacts both live in `artifacts`.
 _COLL_ARTIFACTS = "artifacts"
 
-def _is_collection(db: StandardDatabase, container_id: str) -> bool:
-    """Return True if container_id refers to a container artifact (workspace or collection)."""
+def _artifact_exists(db: StandardDatabase, artifact_id: str) -> bool:
+    """Return True if artifact_id refers to an existing artifact document."""
     try:
         coll = db.collection(_COLL_ARTIFACTS)
-        doc = coll.get(container_id)
-        return bool(doc and doc.get("content_type") in (WORKSPACE_CONTENT_TYPE, COLLECTION_CONTENT_TYPE))
+        doc = coll.get(artifact_id)
+        return doc is not None
     except Exception:
         return False
+
 
 
 def _find_artifact(db: StandardDatabase, artifact_id: str) -> Optional[dict]:
@@ -228,10 +218,9 @@ def _find_artifact(db: StandardDatabase, artifact_id: str) -> Optional[dict]:
 
 
 def _normalize_artifact_doc(doc: Dict[str, Any]) -> Dict[str, Any]:
-    """Ensure artifact-like response shape for both regular and container docs.
+    """Normalize an artifact document for API responses.
 
-    Workspaces and collections are container artifacts. Defaults ``context``/``content``
-    when absent so frontend card rendering always receives a canonical artifact payload.
+    Sets defaults for missing fields and strips ArangoDB internal keys.
     """
     normalized = dict(doc)
 
@@ -239,49 +228,68 @@ def _normalize_artifact_doc(doc: Dict[str, Any]) -> Dict[str, Any]:
     if artifact_id and not normalized.get("root_id"):
         normalized["root_id"] = artifact_id
 
-    content_type = normalized.get("content_type")
-    is_container = isinstance(content_type, str) and content_type.startswith("application/vnd.agience.")
-
     if normalized.get("context") is None:
-        if is_container:
-            normalized["context"] = json.dumps(
-                {
-                    "title": normalized.get("name") or "",
-                    "description": normalized.get("description") or "",
-                    "content_type": content_type,
-                }
-            )
-        else:
-            normalized["context"] = ""
+        normalized["context"] = ""
 
     if normalized.get("content") is None:
-        normalized["content"] = normalized.get("description") or ""
+        normalized["content"] = ""
+
+    if "_key" in normalized:
+        normalized.setdefault("id", normalized.pop("_key"))
+
+    normalized.pop("_id", None)
+    normalized.pop("_rev", None)
 
     return normalized
+
+
+def _strip_immutable_context_fields(
+    doc: Dict[str, Any],
+    context: Optional[str],
+) -> Optional[str]:
+    """Remove writes to ``mutable: false`` fields from a context update.
+
+    Resolves the artifact's content type, loads its type definition, and
+    strips any top-level context keys marked ``mutable: false`` in the
+    type's ``context_schema``. Returns the filtered context JSON string,
+    or the original if no type definition exists.
+    """
+    if not context:
+        return context
+
+    ct = doc.get("content_type")
+    if not ct:
+        return context
+
+    from services import types_service
+    import json as _json
+
+    try:
+        parsed = _json.loads(context) if isinstance(context, str) else context
+    except Exception:
+        return context
+
+    if not isinstance(parsed, dict):
+        return context
+
+    type_def = types_service.resolve_type_definition_cached(ct)
+    if not type_def or not type_def.definition:
+        return context
+
+    schema = type_def.definition.get("type", {}).get("context_schema", {})
+    if not schema:
+        return context
+
+    for field_name, field_spec in schema.items():
+        if isinstance(field_spec, dict) and field_spec.get("mutable") is False:
+            parsed.pop(field_name, None)
+
+    return _json.dumps(parsed)
 
 
 def _now_iso() -> str:
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat()
-
-
-def _resolve_builtin_server_artifact_id(
-    arango_db: StandardDatabase,
-    artifact_id: str,
-) -> str:
-    """Resolve a built-in persona slug (e.g. ``nexus``) to artifact UUID.
-
-    This is a startup invariant: platform topology must be pre-resolved before
-    request handling begins. If the registry is missing, raise an explicit
-    error instead of silently falling back to unresolved IDs.
-    """
-    _ = arango_db  # Signature kept for call-site symmetry.
-    from services import server_registry
-
-    if artifact_id not in server_registry.all_names():
-        return artifact_id
-
-    return server_registry.resolve_name_to_id(artifact_id)
 
 
 # =============================================================================
@@ -343,7 +351,7 @@ async def list_container_artifacts(
     """List all artifacts within a container (workspace or collection)."""
     check_access(auth, container_id, "read", arango_db)
 
-    if not _is_collection(arango_db, container_id):
+    if not _artifact_exists(arango_db, container_id):
         raise HTTPException(status_code=404, detail="Container not found")
 
     from db import arango as arango_db_module
@@ -368,84 +376,125 @@ async def create_artifact(
     auth: AuthContext = Depends(get_auth),
     arango_db: StandardDatabase = Depends(get_arango_db),
 ):
-    """Create a new artifact or workspace container."""
+    """Create a new artifact.
+
+    If the resolved content type declares a ``create`` operation in its
+    ``type.json``, dispatches through the operation dispatcher. Otherwise
+    falls back to default artifact creation via ``workspace_service``.
+    """
     if not auth.user_id:
         raise HTTPException(status_code=401, detail="User identification required")
 
-    # Dispatch: container creation (workspace/collection) or artifact creation.
-    # Container type is determined by content_type — no flag-based branching.
-    ct = body.get("content_type", "")
-    if ct == WORKSPACE_CONTENT_TYPE:
-        container_body = CreateContainerRequest(**body)
-        from services.workspace_service import create_workspace
-        entity = create_workspace(
-            db=arango_db,
-            user_id=auth.user_id,
-            name=container_body.name or "Untitled",
-        )
-        result = entity.to_dict()
-        result["_container_type"] = "workspace"
-        return result
+    from services import operation_dispatcher
+    from services.operation_dispatcher import DispatchContext, OperationNotDeclared
 
-    if ct == COLLECTION_CONTENT_TYPE:
-        container_body = CreateContainerRequest(**body)
-        from services.collection_service import create_new_collection
-        entity = create_new_collection(
-            db=arango_db,
-            owner_id=auth.user_id,
-            name=container_body.name or "Untitled Collection",
-            description=container_body.description or "",
-        )
-        result = entity.to_dict()
-        result["_container_type"] = "collection"
-        return result
+    ct = body.get("content_type") or body.get("type")
 
-    body = CreateArtifactRequest(**body)
+    # Try type-declared create operation first.
+    if ct:
+        try:
+            # For top-level container creation (workspace/collection), any
+            # authenticated user is allowed — provide a full-permission grant
+            # so the dispatcher's grant check passes.
+            from entities.grant import Grant as GrantEntity
+            dispatch_ctx = DispatchContext(
+                user_id=auth.user_id,
+                actor_id=auth.user_id,
+                grants=[GrantEntity(
+                    resource_id="_new",
+                    grantee_type="user", grantee_id=auth.user_id,
+                    granted_by=auth.user_id,
+                    can_create=True, can_read=True, can_update=True,
+                    can_delete=True, can_evict=True, can_invoke=True,
+                    can_add=True, can_share=True, can_admin=True,
+                )],
+                arango_db=arango_db,
+            )
+            synthetic_doc = {
+                "content_type": ct,
+                "_key": str(uuid.uuid4()),
+            }
+            result = await operation_dispatcher.dispatch(
+                "create", synthetic_doc, body, dispatch_ctx,
+                content_type_override=ct,
+            )
+            return result
+        except OperationNotDeclared:
+            pass  # Type has no create operation — fall back to default path.
 
-    check_access(auth, body.container_id, "create", arango_db)
+    return await _default_create_artifact(body, auth, arango_db)
 
-    if not _is_collection(arango_db, body.container_id):
+
+async def _default_create_artifact(
+    body: Dict[str, Any],
+    auth: AuthContext,
+    arango_db: Any,
+) -> Dict[str, Any]:
+    """Default artifact creation — used when the type has no declared create op."""
+    parsed = CreateArtifactRequest(**body)
+
+    check_access(auth, parsed.container_id, "create", arango_db)
+
+    if not _artifact_exists(arango_db, parsed.container_id):
         raise HTTPException(status_code=404, detail="Container not found")
 
     # If source_artifact_id is provided, LINK the existing artifact into the
     # target container (add an edge) instead of creating a duplicate.
-    if body.source_artifact_id:
-        from db.arango import get_artifact as _get_artifact, get_latest_committed_artifact, add_artifact_to_collection
-        source = _get_artifact(arango_db, body.source_artifact_id)
-        if not source:
-            source = get_latest_committed_artifact(arango_db, body.source_artifact_id)
-        if not source:
-            raise HTTPException(status_code=404, detail="Source artifact not found")
-        root_id = source.root_id or source.id
-        add_artifact_to_collection(arango_db, body.container_id, root_id)
-        return source.to_dict()
+    if parsed.source_artifact_id:
+        return _link_source_artifact(arango_db, parsed)
 
     # Build context dict — merge content_type into context if provided.
-    context_str = body.context
-    if body.content_type and context_str:
-        import json
-        try:
-            ctx = json.loads(context_str)
-            ctx.setdefault("content_type", body.content_type)
-            context_str = json.dumps(ctx)
-        except (json.JSONDecodeError, TypeError):
-            pass
-    elif body.content_type and not context_str:
-        import json
-        context_str = json.dumps({"content_type": body.content_type})
+    context_str = _merge_content_type_into_context(parsed.context, parsed.content_type)
 
     from services import workspace_service
 
     entity = workspace_service.create_workspace_artifact(
         db=arango_db,
         user_id=auth.user_id,
-        workspace_id=body.container_id,
+        workspace_id=parsed.container_id,
         context=context_str or "",
-        content=body.content or "",
-        slug=body.slug,
-        content_type=body.content_type,
+        content=parsed.content or "",
+        content_type=parsed.content_type,
     )
     return entity.to_dict()
+
+
+def _link_source_artifact(
+    arango_db: Any,
+    parsed: CreateArtifactRequest,
+) -> Dict[str, Any]:
+    """Link an existing artifact into a container instead of creating a duplicate."""
+    from db.arango import (
+        get_artifact as _get_artifact,
+        get_latest_committed_artifact,
+        add_artifact_to_collection,
+    )
+
+    source = _get_artifact(arango_db, parsed.source_artifact_id)
+    if not source:
+        source = get_latest_committed_artifact(arango_db, parsed.source_artifact_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Source artifact not found")
+    root_id = source.root_id or source.id
+    add_artifact_to_collection(arango_db, parsed.container_id, root_id)
+    return source.to_dict()
+
+
+def _merge_content_type_into_context(
+    context_str: Optional[str],
+    content_type: Optional[str],
+) -> Optional[str]:
+    """Merge content_type into a context JSON string if provided."""
+    if not content_type:
+        return context_str
+    if context_str:
+        try:
+            ctx = json.loads(context_str)
+            ctx.setdefault("content_type", content_type)
+            return json.dumps(ctx)
+        except (json.JSONDecodeError, TypeError):
+            return context_str
+    return json.dumps({"content_type": content_type})
 
 
 # ---------- GET /artifacts/{artifact_id} — Read ----------
@@ -469,7 +518,131 @@ async def read_artifact(
     if "_key" in doc:
         doc.setdefault("id", doc.pop("_key"))
 
+    # Inject computed child-containment fields.
+    root_id = doc.get("root_id") or doc.get("id") or artifact_id
+    doc["has_children"] = db_has_children(arango_db, root_id)
+    doc["child_count"] = db_count_children(arango_db, root_id) if doc["has_children"] else 0
+
     return doc
+
+
+# ---------- GET /artifacts/{artifact_id}/children — List children ----------
+
+@router.get("/{artifact_id}/children")
+async def list_children(
+    artifact_id: str,
+    request: Request,
+    content_type: Optional[str] = Query(None),
+    workspace_id: Optional[str] = Query(None),
+    arango_db: StandardDatabase = Depends(get_arango_db),
+    auth: AuthContext = Depends(get_auth),
+):
+    """List children of any artifact (universal container model).
+
+    Optional filters:
+    - content_type: filter children by their content_type
+    - workspace_id: include draft children from this workspace
+    """
+    check_access(auth, artifact_id, "read", arango_db)
+
+    children = arango.list_collection_artifacts(arango_db, artifact_id)
+
+    # Filter out operator edges (relationship != null means non-containment)
+    children = [c for c in children if not c.get("relationship")]
+
+    # Optional content_type filter
+    if content_type:
+        children = [c for c in children if c.get("content_type") == content_type]
+
+    # Normalize each child
+    for child in children:
+        _normalize_artifact_doc(child)
+
+    return children
+
+
+# ---------- POST /artifacts/{artifact_id}/relationships — Create relationship edge ----------
+
+@router.post("/{artifact_id}/relationships", status_code=status.HTTP_201_CREATED)
+async def create_relationship(
+    artifact_id: str,
+    body: Dict[str, str] = Body(...),
+    auth: AuthContext = Depends(get_auth),
+    arango_db=Depends(get_arango_db),
+) -> Dict[str, str]:
+    """Create a typed relationship edge from this artifact to a target artifact.
+
+    Body:
+        target_id: str — root_id of the target artifact
+        relationship: str — relationship label (e.g. "server", "orchestrator")
+    """
+    target_id = body.get("target_id")
+    relationship = body.get("relationship")
+    if not target_id or not relationship:
+        raise HTTPException(
+            status_code=400,
+            detail="Both 'target_id' and 'relationship' are required",
+        )
+
+    from db.arango import (
+        get_artifact as _get_art,
+        add_artifact_to_collection,
+    )
+
+    source = _get_art(arango_db, artifact_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Source artifact not found")
+    target = _get_art(arango_db, target_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Target artifact not found")
+
+    source_root = source.root_id or source.id
+    target_root = target.root_id or target.id
+
+    add_artifact_to_collection(arango_db, source_root, target_root, relationship=relationship)
+
+    return {"source_id": source_root, "target_id": target_root, "relationship": relationship}
+
+
+# ---------- GET /artifacts/{artifact_id}/relationships — List relationship edges ----------
+
+@router.get("/{artifact_id}/relationships")
+async def list_relationships(
+    artifact_id: str,
+    relationship: Optional[str] = Query(None, description="Filter by relationship type"),
+    auth: AuthContext = Depends(get_auth),
+    arango_db=Depends(get_arango_db),
+) -> List[Dict[str, str]]:
+    """List relationship edges from this artifact.
+
+    Optionally filter by relationship type (e.g. ``?relationship=server``).
+    Returns a list of ``{target_id, relationship}`` objects.
+    """
+    from db.arango import get_artifact as _get_art
+
+    source = _get_art(arango_db, artifact_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    source_root = source.root_id or source.id
+    source_key = f"artifacts/{source_root}"
+
+    query = """
+        FOR e IN collection_artifacts
+            FILTER e._from == @from_key
+            FILTER e.relationship != null
+    """
+    bind = {"from_key": source_key}
+    if relationship:
+        query += "    FILTER e.relationship == @rel\n"
+        bind["rel"] = relationship
+    query += """
+            LET target_key = SPLIT(e._to, '/')[1]
+            RETURN {target_id: target_key, relationship: e.relationship}
+    """
+
+    cursor = arango_db.aql.execute(query, bind_vars=bind)
+    return list(cursor)
 
 
 # ---------- PATCH /artifacts/{artifact_id} — Update ----------
@@ -487,36 +660,34 @@ async def update_artifact(
 
     check_access(auth, artifact_id, "update", arango_db)
 
-    # Check if the target is a container (workspace/collection) first.
-    if _is_collection(arango_db, artifact_id):
-        from services.workspace_service import update_workspace
-        updated = update_workspace(
+    doc = _find_artifact(arango_db, artifact_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    # Strip immutable fields from context updates (schema-driven mutability)
+    context = _strip_immutable_context_fields(doc, body.context)
+
+    from services import workspace_service
+
+    container_id = doc.get("collection_id")
+    if not container_id:
+        # Top-level container artifact (workspace/collection) — no parent collection_id.
+        updated = workspace_service.update_workspace(
             arango_db,
             auth.user_id,
             artifact_id,
             name=body.name,
             description=body.description,
-            context=body.context,
+            context=context,
         )
-        result = updated.to_dict()
-        result["_container_type"] = "workspace" if updated.content_type == WORKSPACE_CONTENT_TYPE else "collection"
-        return result
-
-    doc = _find_artifact(arango_db, artifact_id)
-    if not doc:
-        raise HTTPException(status_code=404, detail="Not found")
-
-    from services import workspace_service
-    container_id = doc.get("collection_id")
-    if not container_id:
-        raise HTTPException(status_code=500, detail="Artifact missing collection_id")
+        return updated.to_dict()
 
     updated = workspace_service.update_artifact(
         arango_db,
         auth.user_id,
         container_id,
         artifact_id,
-        context=body.context,
+        context=context,
         content=body.content,
         state=body.state,
         content_type=body.content_type,
@@ -562,7 +733,7 @@ async def remove_artifact_from_workspace(
     if not auth.user_id:
         raise HTTPException(status_code=401, detail="User identification required")
 
-    check_access(auth, body.container_id, "update", arango_db)
+    check_access(auth, body.container_id, "evict", arango_db)
 
     from services import workspace_service
 
@@ -598,9 +769,6 @@ async def invoke_artifact(
     if not auth.user_id:
         raise HTTPException(status_code=401, detail="User identification required")
 
-    # Resolve builtin server slug (e.g. "aria") to its DB artifact id.
-    artifact_id = _resolve_builtin_server_artifact_id(arango_db, artifact_id)
-
     doc = _find_artifact(arango_db, artifact_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Not found")
@@ -612,6 +780,22 @@ async def invoke_artifact(
     if body.artifacts and "artifacts" not in merged_params:
         merged_params["artifacts"] = body.artifacts
     merged_params["transform_id"] = artifact_id
+
+    # Inject resources binding: when a workspace has a `resources` binding and
+    # the caller hasn't explicitly provided params.resources, resolve it.
+    if body.workspace_id and "resources" not in merged_params:
+        try:
+            from services.workspace_service import resolve_binding
+            resources_cid = resolve_binding(
+                arango_db, auth.user_id, body.workspace_id, "resources",
+            )
+            if resources_cid:
+                resource_rows = arango.list_collection_artifacts(arango_db, resources_cid)
+                merged_params["resources"] = [
+                    r.get("id") for r in resource_rows if r.get("id")
+                ]
+        except Exception:
+            pass  # Non-fatal: transform runs without injected resources
 
     from services import operation_dispatcher
     from services.operation_dispatcher import (
@@ -678,8 +862,8 @@ async def run_artifact_operation(
     declared handler (`dispatch.kind`), and emits every event in
     `operations.{op_name}.emits` around the call.
     """
-    if not auth.user_id and auth.principal_type not in ("server", "mcp_client", "api_key"):
-        raise HTTPException(status_code=401, detail="Authenticated principal required")
+    if not auth.user_id:
+        raise HTTPException(status_code=401, detail="Authenticated user principal required")
 
     reserved = {"create", "read", "update", "delete", "invoke", "add", "search"}
     if op_name in reserved:
@@ -687,9 +871,6 @@ async def run_artifact_operation(
             status_code=400,
             detail=f"Operation '{op_name}' is handled by a dedicated route; use that instead",
         )
-
-    # Resolve builtin server slug (e.g. "nexus") to its registered artifact UUID.
-    artifact_id = _resolve_builtin_server_artifact_id(arango_db, artifact_id)
 
     doc = _find_artifact(arango_db, artifact_id)
     if not doc:
@@ -753,7 +934,6 @@ async def add_item_to_container(
     # Merge content_type into context if provided.
     context_str = body.context
     if body.content_type:
-        import json
         try:
             ctx = json.loads(context_str) if context_str else {}
             ctx.setdefault("content_type", body.content_type)
@@ -762,7 +942,7 @@ async def add_item_to_container(
             if not context_str:
                 context_str = json.dumps({"content_type": body.content_type})
 
-    if not _is_collection(arango_db, container_id):
+    if not _artifact_exists(arango_db, container_id):
         raise HTTPException(status_code=404, detail="Container not found")
 
     from db.arango import create_artifact as create_collection_artifact, add_artifact_to_collection
@@ -782,6 +962,15 @@ async def add_item_to_container(
     )
     result = create_collection_artifact(arango_db, entity)
     add_artifact_to_collection(arango_db, container_id, entity.root_id)
+
+    # Emit event so real-time subscribers see the new artifact.
+    from core.event_bus import emit_artifact_event_sync
+    emit_artifact_event_sync(
+        container_id, "artifact.created",
+        {"artifact": result.to_dict()},
+        actor_id=auth.user_id,
+    )
+
     return result.to_dict()
 
 
@@ -816,7 +1005,7 @@ async def search_artifacts(
     collection_ids: Optional[List[str]] = None
 
     if body.scope:
-        col_ids = [cid for cid in body.scope if _is_collection(arango_db, cid)]
+        col_ids = [cid for cid in body.scope if _artifact_exists(arango_db, cid)]
         collection_ids = col_ids or None
 
     # If no explicit collection scope, expand to all accessible collections.
@@ -829,10 +1018,10 @@ async def search_artifacts(
             computed.extend([c.id for c in accessible])
 
             for g in api_key_grants:
-                if g.resource_type == "collection" and getattr(g, "can_read", False) and g.resource_id:
+                if getattr(g, "can_read", False) and g.resource_id:
                     computed.append(g.resource_id)
 
-        elif bearer_grant and bearer_grant.resource_type == "collection" and getattr(bearer_grant, "can_read", False):
+        elif bearer_grant and getattr(bearer_grant, "can_read", False) and bearer_grant.resource_id:
             computed.append(bearer_grant.resource_id)
 
         collection_ids = list(dict.fromkeys([c for c in computed if c])) or None
@@ -907,18 +1096,6 @@ class UploadStatusRequest(BaseModel):
     context_patch: Optional[Dict[str, Any]] = None
 
 
-class CommitRequest(BaseModel):
-    """Commit workspace artifacts to collections."""
-    artifact_ids: Optional[List[str]] = None
-    dry_run: bool = False
-    commit_token: Optional[str] = None
-
-
-class CommitPreviewRequest(BaseModel):
-    """Preview a commit (dry run)."""
-    artifact_ids: Optional[List[str]] = None
-
-
 class ReorderRequest(BaseModel):
     """Reorder artifacts in a workspace."""
     ordered_ids: List[str]
@@ -963,12 +1140,7 @@ async def batch_fetch_artifacts(
         except HTTPException:
             continue
 
-        normalized = _normalize_artifact_doc(doc)
-        normalized.pop("_id", None)
-        normalized.pop("_rev", None)
-        if "_key" in normalized:
-            normalized.setdefault("id", normalized.pop("_key"))
-        results.append(normalized)
+        results.append(_normalize_artifact_doc(doc))
 
     return {"artifacts": results}
 
@@ -1145,142 +1317,18 @@ async def content_url(
 
     from services.content_service import generate_signed_url
 
+    # When the caller is a server acting via delegation (actor field set),
+    # use the server-facing endpoint so the URL is reachable from the
+    # server's network context.
+    use_server_facing = bool(getattr(auth, "actor", None))
+
     try:
-        url = generate_signed_url(content_key, filename=filename, content_type=content_type)
+        url = generate_signed_url(content_key, filename=filename, content_type=content_type, server_facing=use_server_facing)
     except Exception as exc:
         logger.error("Content URL generation failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to generate content URL: {exc}")
 
     return {"url": url}
-
-
-# =============================================================================
-# Commit / Revert Endpoints
-# =============================================================================
-
-# ---------- POST /artifacts/{container_id}/commit ----------
-
-@router.post("/{container_id}/commit")
-async def commit_artifacts(
-    container_id: str,
-    body: CommitRequest,
-    auth: AuthContext = Depends(get_auth),
-    arango_db: StandardDatabase = Depends(get_arango_db),
-):
-    """Commit workspace artifacts to their target collections."""
-    if not auth.user_id:
-        raise HTTPException(status_code=401, detail="User identification required")
-
-    check_access(auth, container_id, "update", arango_db)
-
-    container = arango_db.collection(_COLL_ARTIFACTS).get(container_id)
-    if not container or container.get("content_type") != WORKSPACE_CONTENT_TYPE:
-        raise HTTPException(status_code=400, detail="Commit only supported on workspaces")
-
-    from services.workspace_service import commit_workspace_to_collections
-
-    try:
-        result = commit_workspace_to_collections(
-            workspace_db=arango_db,
-            collection_db=arango_db,
-            user_id=auth.user_id,
-            workspace_id=container_id,
-            api_key=auth.api_key_entity,
-            artifact_ids=body.artifact_ids,
-            dry_run=body.dry_run,
-            commit_token=body.commit_token,
-        )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error("Commit failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Commit failed: {exc}")
-
-    return result
-
-
-# ---------- POST /artifacts/{container_id}/commit/preview ----------
-
-@router.post("/{container_id}/commit/preview")
-async def commit_preview(
-    container_id: str,
-    body: CommitPreviewRequest,
-    auth: AuthContext = Depends(get_auth),
-    arango_db: StandardDatabase = Depends(get_arango_db),
-):
-    """Preview a commit (dry run) — shows what would change without applying."""
-    if not auth.user_id:
-        raise HTTPException(status_code=401, detail="User identification required")
-
-    check_access(auth, container_id, "read", arango_db)
-
-    container = arango_db.collection(_COLL_ARTIFACTS).get(container_id)
-    if not container or container.get("content_type") != WORKSPACE_CONTENT_TYPE:
-        raise HTTPException(status_code=400, detail="Commit preview only supported on workspaces")
-
-    from services.workspace_service import commit_workspace_to_collections
-
-    try:
-        result = commit_workspace_to_collections(
-            workspace_db=arango_db,
-            collection_db=arango_db,
-            user_id=auth.user_id,
-            workspace_id=container_id,
-            api_key=auth.api_key_entity,
-            artifact_ids=body.artifact_ids,
-            dry_run=True,
-        )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error("Commit preview failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Commit preview failed: {exc}")
-
-    return result
-
-
-# ---------- POST /artifacts/{artifact_id}/revert ----------
-
-@router.post("/{artifact_id}/revert")
-async def revert_artifact(
-    artifact_id: str,
-    auth: AuthContext = Depends(get_auth),
-    arango_db: StandardDatabase = Depends(get_arango_db),
-):
-    """Revert a workspace artifact to its last committed version."""
-    if not auth.user_id:
-        raise HTTPException(status_code=401, detail="User identification required")
-
-    check_access(auth, artifact_id, "update", arango_db)
-
-    doc = _find_artifact(arango_db, artifact_id)
-    if not doc:
-        raise HTTPException(status_code=404, detail="Not found")
-
-    workspace_id = doc.get("collection_id")
-    if not workspace_id:
-        raise HTTPException(status_code=500, detail="Artifact missing collection_id")
-
-    from services.workspace_service import revert_artifact as svc_revert
-
-    try:
-        result = svc_revert(
-            workspace_db=arango_db,
-            collection_db=arango_db,
-            user_id=auth.user_id,
-            workspace_id=workspace_id,
-            artifact_id=artifact_id,
-        )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error("Revert failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Revert failed: {exc}")
-
-    if not result:
-        raise HTTPException(status_code=400, detail="Artifact is not revertable (not modified or never committed)")
-
-    return result.to_dict()
 
 
 # =============================================================================
@@ -1383,7 +1431,7 @@ async def list_commits(
     """List commits for a collection container."""
     check_access(auth, container_id, "read", arango_db)
 
-    if not _is_collection(arango_db, container_id):
+    if not _artifact_exists(arango_db, container_id):
         raise HTTPException(status_code=400, detail="Commits only available for collections")
 
     if not auth.user_id:
@@ -1414,12 +1462,3 @@ async def list_commits(
         ],
     }
 
-
-# =============================================================================
-# Utilities
-# =============================================================================
-
-def _now_iso() -> str:
-    """Return the current UTC time as an ISO 8601 string."""
-    from datetime import datetime, timezone
-    return datetime.now(timezone.utc).isoformat()

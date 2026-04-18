@@ -63,7 +63,7 @@ interface CardGridItemProps {
   editable?: boolean;
   inPanel?: boolean;
   forceHover?: boolean;
-  activeSource?: { type?: 'workspace' | 'collection' | 'mcp-server'; id?: string };
+  activeSource?: { type?: string; id?: string };
   isShowingSearchResults?: boolean;
 }
 
@@ -297,7 +297,7 @@ export const CardGridItem = ({
     if (!e.dataTransfer.types.includes('application/x-agience-artifact')) return;
     e.stopPropagation();
     e.preventDefault();
-    e.dataTransfer.dropEffect = 'copy';
+    e.dataTransfer.dropEffect = 'move';
     setIsDropTarget(true);
   };
 
@@ -333,7 +333,6 @@ export const CardGridItem = ({
       const payload = JSON.parse(raw);
       if (Array.isArray(payload.ids)) ids = payload.ids.map(String);
     } catch { return; }
-
     ids = ids.filter(id => id !== String(artifact.id));
     if (!ids.length) return;
 

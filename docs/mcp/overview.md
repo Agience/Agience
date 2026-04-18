@@ -200,7 +200,7 @@ Agience also uses MCP-compatible execution patterns internally for task agents a
 
 ### Unified invocation model
 
-`POST /agents/invoke` is the generic execution entry point.
+`POST /artifacts/{id}/invoke` is the generic execution entry point.
 
 It supports two MVP modes:
 
@@ -287,13 +287,12 @@ Supported icon values include image URLs, data URIs, emoji, and the special `agi
 
 ### Relevant scopes
 
-- `collections:read`
-- `collections:write`
-- `workspaces:read`
-- `workspaces:write`
+- `artifact:read`
+- `artifact:write`
+- `artifact:manage`
+- `search:read`
 - `stream:read`
 - `stream:ingest`
-- `agents:invoke`
 
 ---
 

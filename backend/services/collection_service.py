@@ -213,6 +213,24 @@ def create_new_collection(
     )
     created = db_create_collection(db, entity)
     ensure_collection_descriptor(db, created)
+
+    # Issue explicit full-CRUDEASIO grant to the creator.
+    from db.arango import upsert_user_collection_grant as db_upsert_creator_grant
+    db_upsert_creator_grant(
+        db,
+        user_id=owner_id,
+        collection_id=created.id,
+        granted_by=owner_id,
+        can_create=True,
+        can_read=True,
+        can_update=True,
+        can_delete=True,
+        can_invoke=True,
+        can_add=True,
+        can_share=True,
+        can_admin=True,
+    )
+
     return created
 
 
@@ -246,7 +264,6 @@ def get_collections_for_user(
     if grant_key:
         if (
             grant_key.grantee_type == GrantEntity.GRANTEE_GRANT_KEY
-            and grant_key.resource_type == "collection"
             and grant_key.can_read
         ):
             read_requires_identity = (
@@ -281,7 +298,14 @@ def update_user_collection(
     description: Optional[str],
 ) -> CollectionEntity:
     collection = db_get_collection_by_id(db, collection_id)
-    if not collection or collection.created_by != user_id:
+    if not collection:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found")
+
+    from db.arango import get_active_grants_for_principal_resource
+    grants = get_active_grants_for_principal_resource(
+        db, grantee_id=user_id, resource_id=collection_id,
+    ) if user_id else []
+    if not any(getattr(g, "can_update", False) for g in grants):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found")
 
     if name:
@@ -303,7 +327,14 @@ def delete_user_collection(db: StandardDatabase, user_id: Optional[str], collect
     - Remove corresponding search index documents
     """
     collection = db_get_collection_by_id(db, collection_id)
-    if not collection or collection.created_by != user_id:
+    if not collection:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found")
+
+    from db.arango import get_active_grants_for_principal_resource
+    grants = get_active_grants_for_principal_resource(
+        db, grantee_id=user_id, resource_id=collection_id,
+    ) if user_id else []
+    if not any(getattr(g, "can_delete", False) for g in grants):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found")
 
     # 1) Fetch all artifacts currently linked to this collection
@@ -418,7 +449,7 @@ def create_and_add_artifact(
 
     event_bus.emit_artifact_event_sync(collection_id, "artifact.created", {
         "artifact": {**created.to_dict(), "collection_id": collection_id}
-    })
+    }, actor_id=actor_id or user_id)
     return created
 
 
@@ -495,7 +526,7 @@ def create_and_add_artifacts_batch(
     for artifact in created:
         event_bus.emit_artifact_event_sync(collection_id, "artifact.created", {
             "artifact": {**artifact.to_dict(), "collection_id": collection_id}
-        })
+        }, actor_id=user_id)
     return created
 
 
@@ -576,7 +607,7 @@ def edit_artifact_in_collection(
     _attach_committed_collection_ids(db, [created])
     event_bus.emit_artifact_event_sync(collection_id, "artifact.updated", {
         "artifact": {**created.to_dict(), "collection_id": collection_id}
-    })
+    }, actor_id=user_id)
     return created
 
 
@@ -642,7 +673,7 @@ def remove_artifact_from_collection_by_version(
 
     event_bus.emit_artifact_event_sync(collection_id, "artifact.deleted", {
         "artifact_id": root_id, "collection_id": collection_id
-    })
+    }, actor_id=user_id)
 
 
 def get_unattached_artifacts(db: StandardDatabase, user_id: str) -> List[ArtifactEntity]:
@@ -690,9 +721,16 @@ def get_artifact_by_id_for_user(
     artifact_root_id: str,
 ) -> ArtifactEntity:
     latest = db_get_latest_artifact_version_by_root_id(db, artifact_root_id)
-    if latest and getattr(latest, "created_by", None) == user_id:
-        _attach_committed_collection_ids(db, [latest])
-        return latest
+    if latest:
+        parent_id = getattr(latest, "collection_id", None)
+        if parent_id and user_id:
+            from db.arango import get_active_grants_for_principal_resource
+            grants = get_active_grants_for_principal_resource(
+                db, grantee_id=user_id, resource_id=parent_id,
+            )
+            if any(getattr(g, "can_read", False) for g in grants):
+                _attach_committed_collection_ids(db, [latest])
+                return latest
 
     linked_collection_ids = db_get_collection_ids_for_root(db, artifact_root_id)
     for col_id in linked_collection_ids:
@@ -872,7 +910,7 @@ def add_artifact_to_collection_with_access_check(
     _attach_committed_collection_ids(db, [artifact])
     event_bus.emit_artifact_event_sync(collection_id, "artifact.created", {
         "artifact": {**artifact.to_dict(), "collection_id": collection_id}
-    })
+    }, actor_id=user_id)
     return artifact
 
 
@@ -1016,4 +1054,15 @@ def record_collection_commit(
     return commit.id
 
 
+# ---------------------------------------------------------------------------
+# Native dispatch handler — called by operation_dispatcher for type.json
+# ``dispatch: { kind: "native", target: "collection_service.<fn>" }``
+# ---------------------------------------------------------------------------
+
+async def dispatch_create_collection(artifact: dict, body: dict, ctx: Any) -> dict:
+    """Create a collection via the ``create`` operation on collection type."""
+    name = (body or {}).get("name", "New Collection")
+    description = (body or {}).get("description", "")
+    coll = create_new_collection(ctx.arango_db, ctx.user_id, name, description)
+    return coll.to_dict()
 

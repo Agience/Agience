@@ -1,0 +1,11 @@
+{
+  "content_type": "application/vnd.agience.prompt+json",
+  "version": 1,
+  "inherits": ["application/json"],
+  "ui": {
+    "label": "Prompt",
+    "icon": "message-square",
+    "color": "#8b5cf6",
+    "viewer": "prompt"
+  }
+}

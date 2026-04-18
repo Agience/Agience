@@ -236,9 +236,9 @@ Content-Type: application/json
   "server_id": "my-server",
   "host_id": "my-org-production",
   "scopes": [
-    "workspaces:read",
-    "collections:read",
-    "agents:invoke"
+    "artifact:read",
+    "search:read",
+    "artifact:invoke"
   ],
   "resource_filters": {
     "workspaces": "*",
@@ -257,7 +257,7 @@ Content-Type: application/json
   "server_id": "my-server",
   "host_id": "my-org-production",
   "authority": "agience.ai",
-  "scopes": ["workspaces:read", "collections:read", "agents:invoke"],
+  "scopes": ["artifact:read", "search:read", "artifact:invoke"],
   "created_time": "2026-04-01T12:00:00Z"
 }
 ```
@@ -304,7 +304,7 @@ Server tokens expire after **1 hour**. There is no refresh token — exchange cr
 Pass the access token as a Bearer header on all Agience API calls:
 
 ```http
-GET /workspaces
+GET /artifacts
 Authorization: Bearer <access-token>
 ```
 
@@ -386,7 +386,7 @@ Content-Type: application/json
 
 {
   "name": "My Server Key",
-  "scopes": ["workspaces:read", "collections:read"],
+  "scopes": ["artifact:read", "search:read"],
   "resource_filters": {"workspaces": "*", "collections": "*"}
 }
 ```
@@ -394,7 +394,7 @@ Content-Type: application/json
 Use the returned key directly as a Bearer token — no exchange step:
 
 ```http
-GET /workspaces
+GET /artifacts
 Authorization: Bearer <api-key>
 ```
 
@@ -402,11 +402,11 @@ Authorization: Bearer <api-key>
 
 | Scope | Permission |
 |-------|-----------|
-| `workspaces:read` | Read workspace artifacts |
-| `workspaces:write` | Create/update workspace artifacts |
-| `collections:read` | Read committed collections |
-| `collections:write` | Write to collections |
-| `agents:invoke` | Invoke agents |
+| `artifact:read` | Read artifacts (workspaces and collections) |
+| `artifact:write` | Create and update artifacts |
+| `artifact:manage` | Archive, revert, or delete artifacts |
+| `artifact:invoke` | Invoke artifact operations (agents, tools) |
+| `search:read` | Search across workspaces and collections |
 | `stream:read` | Read live streams |
 | `stream:ingest` | Ingest stream data |
 
@@ -431,13 +431,14 @@ async def call_agience(method: str, path: str, **kwargs):
 
 
 # Search artifacts
-results = await call_agience("post", "/search", json={"query": "machine learning", "limit": 10})
+results = await call_agience("post", "/artifacts/search", json={"query": "machine learning", "limit": 10})
 
 # Fetch a specific artifact
-artifact = await call_agience("get", f"/workspaces/{workspace_id}/artifacts/{artifact_id}")
+artifact = await call_agience("get", f"/artifacts/{artifact_id}")
 
-# Create a new artifact
-new_artifact = await call_agience("post", f"/workspaces/{workspace_id}/artifacts", json={
+# Create a new artifact (collection_id scopes it to the workspace/collection)
+new_artifact = await call_agience("post", "/artifacts", json={
+    "collection_id": workspace_id,
     "title": "Analysis Result",
     "content_type": "application/vnd.agience.research+json",
     "content": json.dumps({"summary": "...", "findings": [...]}),
@@ -699,8 +700,8 @@ Implement only the ones you need. Unimplemented lifecycle tools are silently ski
 
 ```python
 @mcp.tool(description="Extract plain text from a recipe for full-text indexing.")
-async def extract_text(artifact_id: str, workspace_id: str) -> str:
-    artifact = await call_agience("get", f"/workspaces/{workspace_id}/artifacts/{artifact_id}")
+async def extract_text(artifact_id: str) -> str:
+    artifact = await call_agience("get", f"/artifacts/{artifact_id}")
     data = json.loads(artifact.get("content", "{}"))
     text_parts = [data.get("title", "")]
     text_parts.extend(data.get("ingredients", []))
@@ -878,11 +879,11 @@ mcp = FastMCP(
 )
 
 
-@mcp.tool(description="Read a workspace artifact and return an analysis summary.")
-async def analyze_artifact(workspace_id: str, artifact_id: str) -> str:
+@mcp.tool(description="Read an artifact and return an analysis summary.")
+async def analyze_artifact(artifact_id: str) -> str:
     async with httpx.AsyncClient() as client:
         resp = await client.get(
-            f"{AGIENCE_API_URI}/workspaces/{workspace_id}/artifacts/{artifact_id}",
+            f"{AGIENCE_API_URI}/artifacts/{artifact_id}",
             headers=await auth_headers(),
             timeout=15,
         )
@@ -893,14 +894,15 @@ async def analyze_artifact(workspace_id: str, artifact_id: str) -> str:
     return f"Title: {artifact.get('title')}\nLength: {len(content)} chars\nPreview: {content[:300]}"
 
 
-@mcp.tool(description="Create a report artifact in the workspace from analysis results.")
+@mcp.tool(description="Create a report artifact in a workspace from analysis results.")
 async def create_report(
-    workspace_id: str,
+    collection_id: str,
     title: str,
     summary: str,
     source_artifact_id: Optional[str] = None,
 ) -> str:
     body: dict = {
+        "collection_id": collection_id,
         "title": title,
         "content_type": "application/vnd.my-org.report+json",
         "content": json.dumps({
@@ -910,7 +912,7 @@ async def create_report(
     }
     async with httpx.AsyncClient() as client:
         resp = await client.post(
-            f"{AGIENCE_API_URI}/workspaces/{workspace_id}/artifacts",
+            f"{AGIENCE_API_URI}/artifacts",
             headers=await auth_headers(),
             json=body,
             timeout=15,
@@ -960,11 +962,11 @@ All credential management endpoints require a **human JWT** (not a server creden
 
 | Scope | What it grants |
 |-------|---------------|
-| `workspaces:read` | Read workspace metadata and artifact content |
-| `workspaces:write` | Create and update workspace artifacts |
-| `collections:read` | Read committed collection content |
-| `collections:write` | Write to collections |
-| `agents:invoke` | POST to `/agents/invoke` |
+| `artifact:read` | Read artifact metadata and content (workspaces and collections) |
+| `artifact:write` | Create and update artifacts |
+| `artifact:manage` | Archive, revert, or delete artifacts |
+| `artifact:invoke` | POST /artifacts/{id}/invoke |
+| `search:read` | Search across workspaces and collections |
 | `stream:read` | Read live stream artifacts |
 | `stream:ingest` | Write to stream artifacts |
 
@@ -1022,7 +1024,7 @@ Run a local Agience stack (`./launch-local.bat`), create a server credential via
 curl -X POST http://localhost:8081/server-credentials \
   -H "Authorization: Bearer <your-user-jwt>" \
   -H "Content-Type: application/json" \
-  -d '{"client_id":"test-server","name":"Test","server_id":"test","host_id":"local","scopes":["workspaces:read"],"resource_filters":{"workspaces":"*","collections":"*"}}'
+  -d '{"client_id":"test-server","name":"Test","server_id":"test","host_id":"local","scopes":["artifact:read"],"resource_filters":{"workspaces":"*","collections":"*"}}'
 
 # Export credentials
 export AGIENCE_API_URI=http://localhost:8081
@@ -1032,11 +1034,11 @@ export AGIENCE_CLIENT_SECRET=scs_<returned-secret>
 # Run your server
 python server.py
 
-# Register it in a workspace (create the artifact), then call a tool
-curl -X POST http://localhost:8081/mcp/tools/call \
+# Register it in a workspace (create the artifact), then invoke a tool
+curl -X POST http://localhost:8081/artifacts/<server-artifact-id>/invoke \
   -H "Authorization: Bearer <user-jwt>" \
   -H "Content-Type: application/json" \
-  -d '{"server":"<server-artifact-id>","tool":"analyze_artifact","arguments":{"workspace_id":"<ws-id>","artifact_id":"<art-id>"}}'
+  -d '{"name":"analyze_artifact","arguments":{"workspace_id":"<ws-id>","artifact_id":"<art-id>"}}'
 ```
 
 ### Smoke test checklist
@@ -1056,8 +1058,8 @@ curl -X POST http://localhost:8081/mcp/tools/call \
 | Scenario | Recommended path |
 |----------|-----------------|
 | Expose third-party tools to a workspace (no Agience API calls) | Standard server, HTTP or stdio transport |
-| Server needs to search or read artifacts | Server credential, `workspaces:read` scope |
-| Server creates artifacts in the workspace | Server credential, `workspaces:write` scope |
+| Server needs to search or read artifacts | Server credential, `artifact:read` scope |
+| Server creates artifacts in the workspace | Server credential, `artifact:write` scope |
 | Server acts on behalf of a specific user | API key (user-scoped) or server credential + `X-On-Behalf-Of` |
 | Server needs to access Google/GitHub/Slack on behalf of user | OAuth Connections + Authorizer artifact |
 | Server defines its own artifact types with custom viewers | `ui/` directory + `@mcp.resource("ui://...")` + `type.json` |

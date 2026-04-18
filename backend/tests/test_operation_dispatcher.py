@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -279,10 +280,9 @@ class _FakeGrant:
         self.can_create = flags.get("create", False)
         self.can_delete = flags.get("delete", False)
         self.can_add = flags.get("add", False)
-        self.can_search = flags.get("search", False)
-        self.can_own = flags.get("own", False)
+        self.can_share = flags.get("share", False)
+        self.can_admin = flags.get("admin", False)
         self.resource_id = flags.get("resource_id")
-        self.resource_type = flags.get("resource_type")
 
 
 def _make_op_spec(emits=None, dispatch_kind="recording"):
@@ -415,8 +415,10 @@ def test_transform_type_declares_invoke_operation():
     assert op.enabled is True
     assert op.requires_grant == "invoke"
     assert op.dispatch["kind"] == "mcp_tool"
-    assert op.dispatch["server_ref"] == "$.context.run.server"
+    assert op.dispatch["server_ref"] == "@relationship.server"
     assert op.dispatch["tool_ref"] == "$.context.run.tool"
+    assert op.dispatch["orchestrator_server_ref"] == "@relationship.orchestrator"
+    assert op.dispatch["orchestrator_tool"] == "execute_transform"
     event_names = {e["event"] for e in op.emits}
     assert "artifact.invoke.started" in event_names
     assert "artifact.invoke.completed" in event_names
@@ -428,7 +430,8 @@ def test_transform_type_declares_invoke_operation():
 @pytest.mark.asyncio
 async def test_dispatch_resolves_mcp_tool_refs_from_transform_artifact(monkeypatch):
     """Dispatching invoke on a transform artifact should resolve server/tool
-    from context.run.{server,tool} and call mcp_service.invoke_tool with them."""
+    from @relationship.server edge and context.run.tool, calling
+    mcp_service.invoke_tool with them."""
     types_service.invalidate_type_cache()
     handler_registry.clear()
     handler_registry.register_builtin_handlers()
@@ -445,19 +448,26 @@ async def test_dispatch_resolves_mcp_tool_refs_from_transform_artifact(monkeypat
     import services.mcp_service as mcp_service
     monkeypatch.setattr(mcp_service, "invoke_tool", fake_invoke_tool)
 
+    # Mock DB to resolve @relationship.server edge to "astra" UUID
+    mock_db = MagicMock()
+    mock_cursor = MagicMock()
+    mock_cursor.__iter__ = lambda self: iter(["astra"])
+    mock_db.aql.execute.return_value = mock_cursor
+
     artifact = {
         "_key": "art-xform-1",
+        "root_id": "art-xform-1",
         "workspace_id": "ws-1",
         "context": {
             "content_type": "application/vnd.agience.transform+json",
-            "run": {"server": "astra", "tool": "ingest_text"},
+            "run": {"tool": "ingest_text"},
         },
     }
     ctx = DispatchContext(
         user_id="u1",
         actor_id="u1",
         grants=[_FakeGrant(invoke=True)],
-        arango_db=None,
+        arango_db=mock_db,
     )
 
     result = await dispatch(
@@ -478,22 +488,6 @@ async def test_dispatch_resolves_mcp_tool_refs_from_transform_artifact(monkeypat
 # Phase 4: custom operations on new artifact types
 # ---------------------------------------------------------------------------
 
-def test_api_key_type_declares_crud_operations():
-    types_service.invalidate_type_cache()
-    for op_name in ("create", "read", "update", "delete"):
-        op = types_service.resolve_operation(
-            "application/vnd.agience.api-key+json", op_name
-        )
-        assert op is not None, f"api-key type must declare {op_name}"
-        assert op.enabled is True
-    # create is native-dispatched so it can capture the plaintext key
-    create = types_service.resolve_operation(
-        "application/vnd.agience.api-key+json", "create"
-    )
-    assert create.dispatch["kind"] == "native"
-    assert "api_key_service.create_api_key" in create.dispatch["target"]
-
-
 def test_server_credential_type_declares_rotate_and_publish_jwk():
     types_service.invalidate_type_cache()
     rotate = types_service.resolve_operation(
@@ -501,7 +495,7 @@ def test_server_credential_type_declares_rotate_and_publish_jwk():
     )
     assert rotate is not None
     assert rotate.enabled is True
-    assert rotate.requires_grant == "own"
+    assert rotate.requires_grant == "admin"
     assert rotate.dispatch["kind"] == "native"
     assert rotate.audit is True
     assert any(e["event"] == "server_credential.rotated" for e in rotate.emits)
@@ -697,7 +691,7 @@ async def test_custom_op_dispatches_native_target(monkeypatch):
     ctx = DispatchContext(
         user_id="u1",
         actor_id="u1",
-        grants=[_FakeGrant(own=True)],
+        grants=[_FakeGrant(admin=True)],
         arango_db=None,
     )
 

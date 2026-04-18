@@ -384,6 +384,8 @@ class TestDelegationTokens:
         assert claims["aud"] == "agience-server-nexus"
         assert claims["act"] == {"sub": "agience-server-nexus"}
         assert claims["principal_type"] == "delegation"
+        # host_id is present (may be empty string if topology not bootstrapped)
+        assert "host_id" in claims
         # exp is in the near future
         assert claims["exp"] > claims["iat"]
         # Default TTL is 300s

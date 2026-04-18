@@ -1,0 +1,56 @@
+{
+  "content_type": "application/vnd.agience.tool+json",
+  "version": 1,
+  "inherits": ["application/json"],
+  "description": "MCP Tool — a server-provided callable tool materialized as an artifact.",
+  "context_schema": {
+    "tool_name":    { "type": "string", "description": "MCP tool name", "mutable": false },
+    "description":  { "type": "string", "description": "Human-readable description", "mutable": true },
+    "input_schema": { "type": "object", "description": "JSON Schema for tool input parameters", "mutable": false },
+    "notes":        { "type": "string", "description": "User notes", "mutable": true }
+  },
+  "operations": {
+    "read": {
+      "enabled": true,
+      "requires_grant": "read",
+      "dispatch": { "kind": "artifact_crud" }
+    },
+    "invoke": {
+      "enabled": true,
+      "requires_grant": "invoke",
+      "dispatch": { "kind": "artifact_crud" },
+      "emits": [
+        { "event": "tool.invoked", "phase": "after" }
+      ]
+    },
+    "update": {
+      "enabled": true,
+      "requires_grant": "update",
+      "dispatch": { "kind": "artifact_crud" },
+      "emits": [
+        { "event": "artifact.updated", "phase": "after" }
+      ]
+    },
+    "delete": {
+      "enabled": true,
+      "requires_grant": "delete",
+      "dispatch": { "kind": "artifact_crud" },
+      "emits": [
+        { "event": "artifact.deleted", "phase": "after" }
+      ]
+    }
+  },
+  "ui": {
+    "label": "Tool",
+    "icon": "wrench",
+    "color": "#f59e0b",
+    "badge_class": "bg-amber-100 text-amber-800",
+    "tile_class": "",
+    "modes": ["floating", "preview"],
+    "states": ["view"],
+    "default_mode": "preview",
+    "default_state": "view",
+    "is_container": false,
+    "creatable": false
+  }
+}

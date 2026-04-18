@@ -125,6 +125,52 @@ async def send_password_reset(to_email: str, reset_url: str) -> bool:
     return await send_email(to_email, subject, html_body, text_body)
 
 
+async def send_invite(
+    to_email: str,
+    from_name: str,
+    resource_name: str,
+    claim_url: str,
+    message: Optional[str] = None,
+) -> bool:
+    """Send a workspace-share invite email.
+
+    The email body identifies the inviter by name --- this is safe because
+    delivery is to a verified address. The claim page itself withholds
+    inviter identity until the recipient authenticates.
+    """
+    from services.platform_settings_service import settings
+    platform_name = settings.get("branding.title", "Agience")
+
+    message_block_html = ""
+    message_block_text = ""
+    if message:
+        message_block_html = (
+            '<p style="color:#444;font-size:14px;margin:16px 0;padding:12px;'
+            'background:#f9f9f9;border-radius:6px;">'
+            f'&ldquo;{message}&rdquo;</p>'
+        )
+        message_block_text = f'\n"{message}"\n'
+
+    subject = f"{from_name} invited you to collaborate on {platform_name}"
+    html_body = f"""
+    <div style="font-family: system-ui, sans-serif; max-width: 480px; margin: 0 auto;">
+        <h2 style="color: #1a1a1a;">You've been invited</h2>
+        <p style="color: #666; font-size: 14px;"><strong>{from_name}</strong> invited you to <strong>{resource_name}</strong> on {platform_name}.</p>
+        {message_block_html}
+        <a href="{claim_url}" style="display: inline-block; background: #1a1a1a; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; margin: 20px 0;">View in {platform_name}</a>
+        <p style="color: #999; font-size: 12px;">If you don't have an account yet, one will be created when you sign in.</p>
+    </div>
+    """
+    text_body = (
+        f"{from_name} invited you to {resource_name} on {platform_name}.\n"
+        f"{message_block_text}\n"
+        f"Open this link to accept: {claim_url}\n\n"
+        "If you don't have an account yet, one will be created when you sign in."
+    )
+
+    return await send_email(to_email, subject, html_body, text_body)
+
+
 async def test_connection(provider_config: dict) -> tuple[bool, Optional[str]]:
     """
     Test an email provider configuration without sending a real email.

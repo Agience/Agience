@@ -340,8 +340,9 @@ class TestInvokeToolAuthInjection:
     @patch("mcp_client.adapter.create_client")
     @patch("services.mcp_service._resolve_auth_headers")
     @patch("services.mcp_service._get_server_config_from_collections")
+    @patch("services.mcp_service._agience_core_id", return_value="core-uuid")
     def test_invoke_tool_injects_auth_headers(
-        self, mock_col_config, mock_resolve, mock_create_client
+        self, _mock_core_id, mock_col_config, mock_resolve, mock_create_client
     ):
         from services import mcp_service
 

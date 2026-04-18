@@ -152,6 +152,9 @@ mcp = FastMCP(
     ),
 )
 
+from artifact_helpers import register_types_manifest
+register_types_manifest(mcp, "nexus", __file__)
+
 
 # ---------------------------------------------------------------------------
 # Tool: send_email
@@ -181,15 +184,13 @@ async def send_email(
 
     # 1. Call the platform to get an access token via the Authorizer artifact.
     # User identity is carried by the delegation JWT at transport level.
-    invoke_payload: dict = {
-        "transform_id": NEXUS_AUTHORIZER_ARTIFACT_ID,
-    }
+    invoke_payload: dict = {}
     if NEXUS_AUTHORIZER_WORKSPACE_ID:
         invoke_payload["workspace_id"] = NEXUS_AUTHORIZER_WORKSPACE_ID
 
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
-            f"{AGIENCE_API_URI}/agents/invoke",
+            f"{AGIENCE_API_URI}/artifacts/{NEXUS_AUTHORIZER_ARTIFACT_ID}/invoke",
             headers=await _user_headers(),
             json=invoke_payload,
         )
@@ -631,23 +632,13 @@ async def fetch_url(
         result["truncated"] = True
         result["notice"] = f"Content truncated to {max_length} characters."
 
-    # Optional: extract relevant content via LLM
+    # TODO(agents-invoke-removal): the "extract" agent is a legacy backend
+    # plugin that does not exist and has no server mapping. Query-driven
+    # extraction via fetch_url is disabled pending redesign — callers should
+    # use Verso's invoke_llm directly with a properly configured connection
+    # artifact.
     if query and raw_text:
-        try:
-            headers = await _user_headers()
-            async with httpx.AsyncClient(timeout=60) as client:
-                llm_resp = await client.post(
-                    f"{AGIENCE_API_URI}/agents/invoke",
-                    headers=headers,
-                    json={
-                        "agent": "extract",
-                        "input": f"Extract content relevant to: {query}\n\nSource content:\n{raw_text[:50000]}",
-                    },
-                )
-            if llm_resp.status_code == 200:
-                result["extracted"] = llm_resp.json()
-        except Exception as exc:
-            log.warning("fetch_url: query extraction failed: %s", exc)
+        log.info("fetch_url: query parameter ignored (extract agent not available)")
 
     return json.dumps(result)
 

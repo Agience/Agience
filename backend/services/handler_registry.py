@@ -31,8 +31,8 @@ def resolve_ref(
     body: Optional[Dict[str, Any]] = None,
     ctx: Any = None,
 ) -> Any:
-    """Resolve a JSONPath-lite reference against an artifact document, the
-    dispatch request body, or the dispatch context.
+    """Resolve a reference against an artifact document, the dispatch
+    request body, the dispatch context, or a graph relationship edge.
 
     Supported roots:
     - `$._key`, `$.context.foo.bar` → walks the artifact document. The
@@ -40,12 +40,17 @@ def resolve_ref(
     - `$.body.name`, `$.body.arguments.query` → walks the dispatch request body.
     - `$.ctx.user_id`, `$.ctx.actor_id` → reads named attributes off the
       `DispatchContext` object.
+    - `@relationship.<name>` → follows a relationship edge of the given
+      name from the artifact and returns the target's `root_id`. Requires
+      `ctx.arango_db` to be set (available during dispatch).
 
-    Literal strings (no leading `$.`) are returned as-is. Non-string refs
-    (numbers, dicts) are returned as-is. Missing paths return `None`.
+    Literal strings (no leading `$.` or `@`) are returned as-is. Non-string
+    refs (numbers, dicts) are returned as-is. Missing paths return `None`.
     """
     if not isinstance(ref, str):
         return ref
+    if ref.startswith("@relationship."):
+        return _resolve_relationship_edge(ref, artifact, ctx)
     if not ref.startswith("$."):
         return ref
 
@@ -67,6 +72,60 @@ def resolve_ref(
 
     # Default root: the artifact document itself. Reinclude `first` in the walk.
     return _walk_dict(artifact, parts)
+
+
+def _resolve_relationship_edge(ref: str, artifact: Dict[str, Any], ctx: Any) -> Optional[str]:
+    """Follow a ``@relationship.<name>`` ref to find the target root_id.
+
+    Looks up the artifact's `root_id` (stable identity) and queries
+    `collection_artifacts` edges with the matching `relationship` label.
+    Returns the target `root_id` or ``None``.
+    """
+    relationship_name = ref[len("@relationship."):]
+    if not relationship_name:
+        return None
+
+    db = getattr(ctx, "arango_db", None) if ctx is not None else None
+    if db is None:
+        logger.warning("@relationship ref '%s' requires DB context but ctx.arango_db is None", ref)
+        return None
+
+    from_root_id = artifact.get("root_id") or artifact.get("_key")
+    if not from_root_id:
+        return None
+
+    from db.arango import get_relationship_target
+    return get_relationship_target(db, from_root_id, relationship_name)
+
+
+def _resolve_input_mapping(mapping: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolve ``$.field`` and ``$.field[N]`` refs in *mapping* against *params*.
+
+    Simpler than :func:`resolve_ref` — used for the ``context.run.input_mapping``
+    block on a transform artifact, where refs point into a flat params dict
+    rather than the artifact structure. Non-string values and strings not
+    starting with ``$.`` are passed through unchanged. Keys that resolve to
+    ``None`` are omitted.
+    """
+    result: Dict[str, Any] = {}
+    for key, value in mapping.items():
+        if isinstance(value, str) and value.startswith("$."):
+            path = value[2:]
+            if "[" in path:
+                field, rest = path.split("[", 1)
+                try:
+                    idx = int(rest.rstrip("]"))
+                except ValueError:
+                    idx = 0
+                raw = params.get(field)
+                resolved = raw[idx] if isinstance(raw, list) and len(raw) > idx else None
+            else:
+                resolved = params.get(path)
+            if resolved is not None:
+                result[key] = resolved
+        else:
+            result[key] = value
+    return result
 
 
 def _walk_dict(root: Any, parts: list[str]) -> Any:
@@ -169,10 +228,22 @@ def get_native_target(name: str) -> Optional[Callable[..., Awaitable[Any]]]:
 
 @dataclass
 class McpToolHandler:
-    """Dispatch kind `mcp_tool` — call an MCP server tool.
+    """Dispatch kind ``mcp_tool`` — call an MCP server tool.
 
-    `op_spec.dispatch` must contain `server_ref` and `tool_ref` (literals or
-    `$.path.to.field` refs into the artifact doc).
+    ``op_spec.dispatch`` provides:
+
+    - ``server_ref`` + ``tool_ref`` — ``$.path`` refs or ``@relationship``
+      refs resolved from the artifact. Used for per-artifact routing: e.g.
+      a transform has a ``server`` relationship edge to the MCP server that
+      handles it.
+
+    - ``orchestrator_server_ref`` + ``orchestrator_tool`` (optional) — used
+      when the primary refs resolve to null. Lets a type declare a default
+      orchestrator for its invoke op. ``orchestrator_server_ref`` is resolved
+      through ``resolve_ref`` (supports ``@relationship`` edges).
+
+    If neither primary nor orchestrator refs resolve, the handler raises
+    ``ValueError``.
     """
 
     kind: str = "mcp_tool"
@@ -185,20 +256,54 @@ class McpToolHandler:
         ctx: Any,
     ) -> Any:
         dispatch = op_spec.dispatch or {}
+
+        # Primary: per-artifact routing. Resolves from the artifact itself
+        # so the caller doesn't know or care which server handles it.
         server_id = resolve_ref(dispatch.get("server_ref"), artifact, body=body, ctx=ctx)
         tool_name = resolve_ref(dispatch.get("tool_ref"), artifact, body=body, ctx=ctx)
 
+        # Orchestrator fallback: used for run types that don't declare a
+        # direct server/tool (e.g. workflow, llm, transform-ref).
+        if not server_id or not tool_name:
+            orch_server_ref = dispatch.get("orchestrator_server_ref")
+            if orch_server_ref:
+                server_id = resolve_ref(orch_server_ref, artifact, body=body, ctx=ctx) or server_id
+            tool_name = dispatch.get("orchestrator_tool") or tool_name
+
         if not server_id or not tool_name:
             raise ValueError(
-                f"mcp_tool dispatch could not resolve server ({dispatch.get('server_ref')!r}) "
-                f"or tool ({dispatch.get('tool_ref')!r}) from artifact/body/ctx"
+                f"mcp_tool dispatch could not resolve server "
+                f"({dispatch.get('server_ref')!r} / orchestrator_server_ref="
+                f"{dispatch.get('orchestrator_server_ref')!r}) or tool "
+                f"({dispatch.get('tool_ref')!r} / orchestrator_tool="
+                f"{dispatch.get('orchestrator_tool')!r}) from artifact/body/ctx"
             )
 
         # Lazy import to avoid circular dependency on mcp_service
         from services import mcp_service
 
         workspace_id = body.get("workspace_id") if isinstance(body, dict) else None
-        arguments = body.get("arguments") if isinstance(body, dict) and "arguments" in body else body
+
+        # Resolve input_mapping from the artifact's context.run block.
+        # This maps invoke body fields (workspace_id, artifacts[0], etc.)
+        # to the tool's expected parameter names (e.g. artifact_id).
+        input_mapping = resolve_ref("$.context.run.input_mapping", artifact)
+        if isinstance(input_mapping, dict) and input_mapping:
+            # Build a flat params dict from the invoke body for mapping resolution
+            mapping_source: Dict[str, Any] = {}
+            if isinstance(body, dict):
+                mapping_source.update(body.get("params") or {})
+                for k in ("workspace_id", "artifacts", "input"):
+                    if k in body and k not in mapping_source:
+                        mapping_source[k] = body[k]
+            arguments = _resolve_input_mapping(input_mapping, mapping_source)
+        else:
+            arguments = body.get("arguments") if isinstance(body, dict) and "arguments" in body else body
+
+        logger.info(
+            "mcp_tool dispatch: server=%s tool=%s arguments=%s",
+            server_id, tool_name, arguments,
+        )
 
         # `mcp_service.invoke_tool` is synchronous (uses httpx.Client). Run it
         # in a thread-pool executor so it does not block the asyncio event loop.
@@ -215,6 +320,8 @@ class McpToolHandler:
                 arguments=arguments or {},
             ),
         )
+
+        logger.info("mcp_tool result: server=%s tool=%s result=%s", server_id, tool_name, result)
         return result
 
 
@@ -268,8 +375,8 @@ class ArtifactCrudHandler:
     ) -> Any:
         # When the dispatcher is invoked with kind=artifact_crud, the caller
         # supplies a `ctx.inner_result` (already-computed service result) or
-        # a `ctx.inner_callable` to run. This keeps back-compat with existing
-        # router code that calls services directly.
+        # a `ctx.inner_callable` to run so the dispatcher wraps the call in
+        # its emit envelope without re-implementing the service call.
         inner = getattr(ctx, "inner_callable", None)
         if inner is not None:
             result = inner()

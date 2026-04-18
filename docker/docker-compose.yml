@@ -24,6 +24,8 @@
 # is needed — all configuration is entered via the setup wizard in the browser.
 # Keys are stored in DATA_PATH/.data/keys — back this directory up.
 
+name: ${COMPOSE_PROJECT_NAME:-agience}
+
 services:
 
   # One-shot init container: creates data directories and generates all key material.
@@ -31,7 +33,7 @@ services:
   # Published image contains init.py with cryptography pre-installed.
   init:
     image: ${REGISTRY:-agience}/agience-init:${VERSION:-latest}
-    container_name: init
+    container_name: ${COMPOSE_PROJECT_NAME:-agience}-init
     environment:
       - ARANGO_ROOT_PASSWORD=${ARANGO_ROOT_PASSWORD:-}
       - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-}
@@ -40,7 +42,7 @@ services:
 
   content:
     image: minio/minio:RELEASE.2025-07-23T15-54-02Z
-    container_name: content
+    container_name: ${COMPOSE_PROJECT_NAME:-agience}-content
     restart: unless-stopped
     environment:
       - MINIO_ROOT_USER=${MINIO_ROOT_USER:-agience}
@@ -54,7 +56,7 @@ services:
 
   graph:
     image: arangodb:3.11
-    container_name: graph
+    container_name: ${COMPOSE_PROJECT_NAME:-agience}-graph
     restart: unless-stopped
     environment:
       - ARANGO_NO_AUTH=${ARANGO_NO_AUTH:-0}
@@ -68,8 +70,8 @@ services:
         condition: service_completed_successfully
 
   search:
-    image: opensearchproject/opensearch:latest
-    container_name: search
+    image: opensearchproject/opensearch:2.19.5
+    container_name: ${COMPOSE_PROJECT_NAME:-agience}-search
     restart: unless-stopped
     user: "1000:1000"
     environment:
@@ -95,7 +97,7 @@ services:
 
   backend:
     image: ${REGISTRY:-agience}/agience-backend:${VERSION:-latest}
-    container_name: backend
+    container_name: ${COMPOSE_PROJECT_NAME:-agience}-backend
     restart: unless-stopped
     environment:
       - BUILD_INFO_PATH=/app/build_info.json
@@ -117,7 +119,7 @@ services:
 
   frontend:
     image: ${REGISTRY:-agience}/agience-frontend:${VERSION:-latest}
-    container_name: frontend
+    container_name: ${COMPOSE_PROJECT_NAME:-agience}-frontend
     restart: unless-stopped
     environment:
       VITE_BACKEND_URI: ${VITE_BACKEND_URI:-http://localhost:8081}

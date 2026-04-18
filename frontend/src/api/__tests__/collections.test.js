@@ -87,7 +87,6 @@ describe('api/collections', () => {
     });
     expect(post).toHaveBeenCalledWith('/grants', expect.objectContaining({
       resource_id: 'c1',
-      resource_type: 'collection',
       name: 'Grant',
     }));
     expect(res.id).toBe('s1');
@@ -96,7 +95,7 @@ describe('api/collections', () => {
   it('listGrants calls GET /grants?resource_id=...', async () => {
     get.mockResolvedValueOnce([{ id: 's1', name: 'Grant 1' }]);
     const res = await listGrants('c1');
-    expect(get).toHaveBeenCalledWith('/grants?resource_id=c1&resource_type=collection');
+    expect(get).toHaveBeenCalledWith('/grants?resource_id=c1');
     expect(res).toEqual([{ id: 's1', name: 'Grant 1' }]);
   });
 

@@ -6,16 +6,26 @@
   ],
   "description": "MCP Server \u2014 transport configuration stored as an artifact.  Creating an artifact of this type in a workspace registers an external MCP server for that workspace.",
   "context_schema": {
-    "title": "string \u2014 display name",
+    "title": { "type": "string", "description": "Display name", "mutable": true },
     "transport": {
-      "type": "\"http\" | \"stdio\" | \"builtin\"",
-      "well_known": "string (http) \u2014 /.well-known/mcp.json URL or direct /mcp endpoint",
-      "command": "string (stdio) \u2014 executable path",
-      "args": "string[] (stdio)",
-      "cwd": "string (stdio, optional)",
-      "env": "object (stdio/http) \u2014 environment variables / auth headers"
+      "type": "object",
+      "description": "Server transport configuration",
+      "mutable": false,
+      "properties": {
+        "type": { "type": "string", "enum": ["http", "stdio", "builtin"] },
+        "well_known": { "type": "string", "description": "/.well-known/mcp.json URL or /mcp endpoint" },
+        "command": { "type": "string", "description": "Executable path (stdio)" },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "cwd": { "type": "string" },
+        "env": { "type": "object" }
+      }
     },
-    "notes": "string (optional)"
+    "notes": { "type": "string", "description": "User notes", "mutable": true }
+  },
+  "relationships": {
+    "tools":     { "content_type": "application/vnd.agience.tool+json",     "label": "Tools" },
+    "resources": { "content_type": "application/vnd.agience.resource+json", "label": "Resources" },
+    "prompts":   { "content_type": "application/vnd.agience.prompt+json",   "label": "Prompts" }
   },
   "operations": {
     "read": {
@@ -95,6 +105,21 @@
       },
       "emits": [
         { "event": "mcp.resources.imported", "phase": "after" }
+      ]
+    },
+    "materialize_capabilities": {
+      "enabled": true,
+      "requires_grant": "invoke",
+      "dispatch": {
+        "kind": "native",
+        "target": "mcp_service.dispatch_materialize_capabilities"
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "emits": [
+        { "event": "mcp.capabilities.materialized", "phase": "after" }
       ]
     }
   },

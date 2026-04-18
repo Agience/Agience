@@ -38,7 +38,7 @@
     },
     "rotate": {
       "enabled": true,
-      "requires_grant": "own",
+      "requires_grant": "admin",
       "dispatch": { "kind": "native", "target": "server_credential_service.rotate_credential" },
       "audit": true,
       "emits": [
@@ -47,7 +47,7 @@
     },
     "publish_jwk": {
       "enabled": true,
-      "requires_grant": "own",
+      "requires_grant": "admin",
       "dispatch": { "kind": "native", "target": "server_credential_service.publish_jwk" },
       "emits": [
         { "event": "server_credential.jwk_published", "phase": "after" }

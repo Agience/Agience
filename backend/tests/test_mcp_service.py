@@ -101,8 +101,15 @@ class TestServerRegistry:
 
     def test_build_http_config(self, monkeypatch):
         monkeypatch.setenv("AGIENCE_SERVER_HOST_URI", "https://servers.example.com")
+        monkeypatch.setattr(
+            "services.platform_topology.get_id_optional",
+            lambda slug: f"uuid-{slug}",
+        )
+        server_registry._ID_BY_NAME.clear()
+        server_registry._NAME_BY_ID.clear()
+        server_registry.populate_ids()
         cfg = server_registry.build_http_config("nexus")
-        assert cfg.id == "nexus"
+        assert cfg.id == "uuid-agience-server-nexus"
         assert cfg.transport.type == "http"
         assert "/nexus" in cfg.transport.well_known
 
@@ -126,9 +133,12 @@ class TestInvokeToolBuiltin:
     def test_agience_core_short_circuits(self):
         fake_client = MagicMock()
         fake_client.call_tool.return_value = {"content": "ok"}
-        with patch(
-            "services.mcp_service.create_agience_core_client", return_value=fake_client
-        ) as create_local:
+        with (
+            patch("services.mcp_service._agience_core_id", return_value="agience-core"),
+            patch(
+                "services.mcp_service.create_agience_core_client", return_value=fake_client
+            ) as create_local,
+        ):
             result = mcp_service.invoke_tool(
                 db=MagicMock(),
                 user_id="user-1",
@@ -142,14 +152,19 @@ class TestInvokeToolBuiltin:
         create_local.assert_called_once()
 
     def test_builtin_persona_injects_delegation_token(self, monkeypatch):
-        # Populate registry so "nexus" is a known builtin name
+        # Populate registry so nexus has a known bootstrap UUID
+        nexus_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
         monkeypatch.setattr(
             "services.platform_topology.get_id_optional",
-            lambda slug: None,  # No IDs populated for this test
+            lambda slug: nexus_uuid if "nexus" in slug else None,
         )
+        server_registry._ID_BY_NAME.clear()
+        server_registry._NAME_BY_ID.clear()
+        server_registry.populate_ids()
         fake_client = MagicMock()
         fake_client.call_tool.return_value = {"content": "tool-result"}
         with (
+            patch("services.mcp_service._agience_core_id", return_value="core-uuid"),
             patch(
                 "services.auth_service.issue_delegation_token", return_value="delegation-jwt"
             ) as issue,
@@ -158,7 +173,7 @@ class TestInvokeToolBuiltin:
             mcp_service.invoke_tool(
                 db=MagicMock(),
                 user_id="user-1",
-                server_artifact_id="nexus",
+                server_artifact_id=nexus_uuid,
                 tool_name="ping",
                 arguments={},
             )
@@ -184,6 +199,7 @@ class TestInvokeToolBuiltin:
         server_registry._NAME_BY_ID.clear()
         server_registry.populate_ids()
         with (
+            patch("services.mcp_service._agience_core_id", return_value="core-uuid"),
             patch(
                 "services.auth_service.issue_delegation_token", return_value="dt"
             ) as issue,
@@ -198,17 +214,26 @@ class TestInvokeToolBuiltin:
             )
         issue.assert_called_once_with("agience-server-aria", "user-2")
 
-    def test_builtin_with_no_user_skips_delegation(self):
+    def test_builtin_with_no_user_skips_delegation(self, monkeypatch):
+        nexus_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        monkeypatch.setattr(
+            "services.platform_topology.get_id_optional",
+            lambda slug: nexus_uuid if "nexus" in slug else None,
+        )
+        server_registry._ID_BY_NAME.clear()
+        server_registry._NAME_BY_ID.clear()
+        server_registry.populate_ids()
         fake_client = MagicMock()
         fake_client.call_tool.return_value = {}
         with (
+            patch("services.mcp_service._agience_core_id", return_value="core-uuid"),
             patch("services.auth_service.issue_delegation_token") as issue,
             patch("mcp_client.adapter.create_client", return_value=fake_client) as create_client,
         ):
             mcp_service.invoke_tool(
                 db=MagicMock(),
                 user_id="",
-                server_artifact_id="nexus",
+                server_artifact_id=nexus_uuid,
                 tool_name="ping",
                 arguments={},
             )
@@ -218,6 +243,7 @@ class TestInvokeToolBuiltin:
 
     def test_unknown_server_raises_value_error(self):
         with (
+            patch("services.mcp_service._agience_core_id", return_value="core-uuid"),
             patch("services.mcp_service._get_server_config", side_effect=ValueError("nope")),
             patch(
                 "services.mcp_service._get_server_config_from_collections", return_value=None
@@ -388,10 +414,9 @@ class TestDispatchTargets:
 # ---------------------------------------------------------------------------
 
 class TestImportResourcesAsArtifacts:
-    def test_workspace_not_owned_raises(self):
+    def test_workspace_no_create_grant_raises(self):
         db = MagicMock()
-        ws = SimpleNamespace(id="ws", created_by="someone-else")
-        with patch("db.arango.get_collection_by_id", return_value=ws):
+        with patch("db.arango.get_active_grants_for_principal_resource", return_value=[]):
             with pytest.raises(ValueError, match="not found"):
                 mcp_service.import_resources_as_artifacts(
                     db, "user-1", "ws", "srv-1", resources=[]
@@ -399,10 +424,10 @@ class TestImportResourcesAsArtifacts:
 
     def test_builds_resource_context_envelopes(self):
         db = MagicMock()
-        ws = SimpleNamespace(id="ws", created_by="user-1")
+        grant = SimpleNamespace(can_create=True)
         created = [SimpleNamespace(id="a-1"), SimpleNamespace(id="a-2")]
         with (
-            patch("db.arango.get_collection_by_id", return_value=ws),
+            patch("db.arango.get_active_grants_for_principal_resource", return_value=[grant]),
             patch(
                 "services.workspace_service.create_workspace_artifacts_bulk",
                 return_value=created,

@@ -85,7 +85,6 @@ def ensure_current_instance_host(arango_db: StandardDatabase) -> Optional[str]:
             content_type=HOST_CONTENT_TYPE,
             created_by=AGIENCE_PLATFORM_USER_ID,
             created_time=now,
-            slug=HOST_ARTIFACT_SLUG,
         )
         db_create_artifact(arango_db, artifact)
         db_add_artifact_to_collection(
@@ -151,7 +150,6 @@ def _ensure_host_collection(arango_db: StandardDatabase) -> Optional[str]:
             created_by=AGIENCE_PLATFORM_USER_ID,
             content_type=COLLECTION_CONTENT_TYPE,
             state=CollectionEntity.STATE_COMMITTED,
-            slug=HOST_COLLECTION_SLUG,
             created_time=now,
             modified_time=now,
         )

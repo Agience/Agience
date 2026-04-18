@@ -1,8 +1,8 @@
 // src/api/__tests__/agent.test.js
-// Tests for api/agent.ts (loadDemoData, extractUnits/extractInformation)
-// NOTE: invokeAgent was removed in favour of the unified /agents/invoke pattern;
-//       only the typed helper functions (loadDemoData, extractInformation) are
-//       tested here.
+// Tests for api/agent.ts — loadDemoData, extractUnits, extractInformation.
+// These helpers dispatch through POST /artifacts/{server}/invoke, which is
+// the MCP server artifact's invoke operation. The invoke operation reads
+// body.name as the tool to call on that server.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../api', () => ({
@@ -14,13 +14,11 @@ import { loadDemoData, extractUnits, extractInformation } from '../agent';
 
 describe('api/agent', () => {
   beforeEach(() => {
-    // resetAllMocks clears both call history AND pending mockResolvedValueOnce
-    // queues, preventing stale values leaking between tests.
     vi.resetAllMocks();
   });
 
   describe('loadDemoData', () => {
-    it('calls /agents/invoke with the demo_data agent and all params', async () => {
+    it('dispatches to verso.load_demo_data with all params', async () => {
       const mockResponse = {
         workspaces_created: 2,
         workspace_ids: ['ws-1', 'ws-2'],
@@ -40,9 +38,9 @@ describe('api/agent', () => {
 
       const result = await loadDemoData(request);
 
-      expect(post).toHaveBeenCalledWith('/agents/invoke', {
-        operator: 'demo_data',
-        operator_params: {
+      expect(post).toHaveBeenCalledWith('/artifacts/verso/invoke', {
+        name: 'load_demo_data',
+        arguments: {
           topics: ['Technology', 'Science', 'Art'],
           num_workspaces: 2,
           artifacts_per_workspace: 8,
@@ -53,7 +51,7 @@ describe('api/agent', () => {
       expect(result).toEqual(mockResponse);
     });
 
-    it('handles a minimal (empty) request — all operator_params are undefined', async () => {
+    it('handles a minimal (empty) request — all arguments are undefined', async () => {
       const mockResponse = {
         workspaces_created: 0,
         workspace_ids: [],
@@ -66,9 +64,9 @@ describe('api/agent', () => {
 
       const result = await loadDemoData({});
 
-      expect(post).toHaveBeenCalledWith('/agents/invoke', {
-        operator: 'demo_data',
-        operator_params: {
+      expect(post).toHaveBeenCalledWith('/artifacts/verso/invoke', {
+        name: 'load_demo_data',
+        arguments: {
           topics: undefined,
           num_workspaces: undefined,
           artifacts_per_workspace: undefined,
@@ -79,7 +77,7 @@ describe('api/agent', () => {
       expect(result).toEqual(mockResponse);
     });
 
-    it('includes agience_guide_added flag in the response when requested', async () => {
+    it('passes include_agience_guide through to arguments', async () => {
       const mockResponse = {
         workspaces_created: 0,
         workspace_ids: [],
@@ -93,10 +91,10 @@ describe('api/agent', () => {
       const result = await loadDemoData({ include_agience_guide: true });
 
       expect(post).toHaveBeenCalledWith(
-        '/agents/invoke',
+        '/artifacts/verso/invoke',
         expect.objectContaining({
-          operator: 'demo_data',
-          operator_params: expect.objectContaining({ include_agience_guide: true }),
+          name: 'load_demo_data',
+          arguments: expect.objectContaining({ include_agience_guide: true }),
         })
       );
 
@@ -112,7 +110,7 @@ describe('api/agent', () => {
   });
 
   describe('extractUnits', () => {
-    it('posts the extract_units operator with workspace and source artifact ids', async () => {
+    it('dispatches to aria.extract_units with workspace + source ids', async () => {
       post.mockResolvedValueOnce({
         workspace_id: 'ws-1',
         source_artifact_id: 'art-1',
@@ -122,10 +120,11 @@ describe('api/agent', () => {
 
       const result = await extractUnits('ws-1', 'art-1');
 
-      expect(post).toHaveBeenCalledWith('/agents/invoke', {
-        operator: 'extract_units:extract_units',
+      expect(post).toHaveBeenCalledWith('/artifacts/aria/invoke', {
+        name: 'extract_units',
         workspace_id: 'ws-1',
-        params: {
+        arguments: {
+          workspace_id: 'ws-1',
           source_artifact_id: 'art-1',
           artifact_artifact_ids: [],
         },
@@ -144,7 +143,7 @@ describe('api/agent', () => {
       await extractUnits('ws-1', 'art-1', ['ctx-a', 'ctx-b']);
 
       const [, payload] = post.mock.calls[0];
-      expect(payload.params.artifact_artifact_ids).toEqual(['ctx-a', 'ctx-b']);
+      expect(payload.arguments.artifact_artifact_ids).toEqual(['ctx-a', 'ctx-b']);
     });
 
     it('propagates backend errors', async () => {
@@ -167,11 +166,12 @@ describe('api/agent', () => {
 
       await extractInformation('ws-2', 'art-9', ['extra-ctx']);
 
-      const [, payload] = post.mock.calls[0];
-      expect(payload.operator).toBe('extract_units:extract_units');
+      const [url, payload] = post.mock.calls[0];
+      expect(url).toBe('/artifacts/aria/invoke');
+      expect(payload.name).toBe('extract_units');
       expect(payload.workspace_id).toBe('ws-2');
-      expect(payload.params.source_artifact_id).toBe('art-9');
-      expect(payload.params.artifact_artifact_ids).toEqual(['extra-ctx']);
+      expect(payload.arguments.source_artifact_id).toBe('art-9');
+      expect(payload.arguments.artifact_artifact_ids).toEqual(['extra-ctx']);
     });
   });
 });

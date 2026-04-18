@@ -24,7 +24,7 @@ set "VENV_PIP=%VENV_DIR%\Scripts\pip.exe"
 
 REM Service groups
 set INFRA=content graph search
-set SERVERS=servers astra-stream
+set SERVERS=servers stream
 
 if "%1"=="--help" goto help
 if "%1"=="-h" goto help

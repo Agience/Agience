@@ -80,21 +80,21 @@ export default function BrowserHeader({
     });
   };
 
-  // Hidden workspace tabs – read directly from preferences, write directly to preferences.
   const browserPrefs = useMemo(
     () => ((preferences.browser as Record<string, unknown> | undefined) ?? {}),
     [preferences.browser]
   );
 
-  const hiddenTabIds = useMemo(() => {
-    const raw = (browserPrefs as { hiddenWorkspaceTabIds?: unknown }).hiddenWorkspaceTabIds;
-    return Array.isArray(raw) ? raw.map(String).filter(Boolean) : [];
+  const dockedTabIds = useMemo(() => {
+    const raw = (browserPrefs as { dockedWorkspaceCardIds?: unknown }).dockedWorkspaceCardIds;
+    return Array.isArray(raw) ? raw.map(String).filter(Boolean) : undefined;
   }, [browserPrefs]);
 
   const visibleWorkspaces = useMemo(
-    () => workspaces.filter(w => !hiddenTabIds.includes(w.id)),
-    [workspaces, hiddenTabIds]
+    () => (dockedTabIds ? workspaces.filter(w => dockedTabIds.includes(w.id)) : workspaces),
+    [workspaces, dockedTabIds]
   );
+
   const showDockHint = visibleWorkspaces.length === 0;
 
   const hasActiveWorkspace = activeSource?.type === 'workspace' && Boolean(activeWorkspace?.id);
@@ -111,12 +111,18 @@ export default function BrowserHeader({
   };
 
   const handleCloseTab = (workspaceId: string) => {
-    const nextHidden = [...hiddenTabIds, workspaceId];
+    const nextDocked = dockedTabIds
+      ? dockedTabIds.filter(id => id !== workspaceId)
+      : workspaces.filter(w => w.id !== workspaceId).map(w => w.id);
+
     void updatePreferences({
-      browser: { ...browserPrefs, hiddenWorkspaceTabIds: nextHidden },
+      browser: { ...browserPrefs, dockedWorkspaceCardIds: nextDocked },
     });
+
     if (activeWorkspace?.id === workspaceId) {
-      const next = workspaces.find(w => w.id !== workspaceId && !nextHidden.includes(w.id));
+      const next = workspaces.find(
+        (w) => w.id !== workspaceId && (dockedTabIds ? dockedTabIds.includes(w.id) : true),
+      );
       setActiveWorkspaceId(next?.id ?? null);
     }
   };

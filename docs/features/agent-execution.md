@@ -1,7 +1,7 @@
 # Agent Execution
 
 Status: **Reference**
-Date: 2026-04-01
+Date: 2026-04-17
 
 ---
 
@@ -58,7 +58,7 @@ An agent artifact is stored with `content_type: "application/vnd.agience.agent+j
 | Path | Required | Description |
 |------|----------|-------------|
 | `agent.version` | yes | Schema version. Currently `1`. |
-| `agent.order.artifact_id` | yes | Reference to the Operator artifact in the same workspace. |
+| `agent.order.artifact_id` | yes | Reference to the Operator artifact in the same workspace. (`order` is the legacy code field name.) |
 | `agent.host.kind` | yes | Compute boundary type. Value: `"mcp"`. |
 | `agent.host.server_id` | yes | MCP server identifier — must be attached to the workspace or auto-discoverable. |
 | `agent.host.certified` | yes | Whether the host has a valid certification chain. |
@@ -71,7 +71,7 @@ An agent artifact is stored with `content_type: "application/vnd.agience.agent+j
 ### Notes
 
 - Agent artifacts **never contain secrets**. Connection credentials are resolved per-call via connection artifacts or workspace-attached config.
-- `agent.order.artifact_id` points to an Operator artifact in the **same workspace**. When committing to a collection, both the Agent and Operator artifacts should be committed together to preserve the reference.
+- `agent.order.artifact_id` (legacy code field name) points to an Operator artifact in the **same workspace**. When committing to a collection, both the Agent and Operator artifacts should be committed together to preserve the reference.
 - Agent artifacts follow the standard artifact lifecycle: create in workspace → curate → commit to collection.
 
 ### Certification
@@ -128,27 +128,19 @@ If the Operator does not include an `execution` block, the runner applies these 
 
 ## Invocation API
 
-### `POST /agents/invoke`
+### `POST /artifacts/{id}/invoke`
 
-The single agentic endpoint. All agentic calls flow through this endpoint. **Identity always comes from the auth token (JWT or API key), never from the request body.**
+Agents are artifacts. All execution flows through the unified artifact invoke endpoint. The `{id}` is the artifact UUID of the agent being invoked. **Identity always comes from the auth token (JWT or API key), never from the request body.**
 
-#### Request — four concerns
-
-| Concern | Fields | Notes |
-|---------|--------|-------|
-| **Operator** | `transform_id` | Operator artifact ID. Used for artifact-driven execution. |
-| | `agent` | Named task-agent string (e.g., `"extract_units"`). |
-| **Knowledge** | `workspace_id` | Scopes the execution to a workspace. |
-| | `cards` | Array of artifact IDs injected as context. |
-| **Input** | `input` | Raw text input. |
-| | `params` | Structured key-value arguments. |
-| **Identity** | *(implicit)* | Resolved from the Bearer token. Never provided in the body. |
+The artifact's `type.json` `operations.invoke` block declares the dispatch handler. `operation_dispatcher.dispatch("invoke", artifact, body, ctx)` resolves the handler, enforces grants, fires lifecycle events, and delegates to `agent_service.invoke()` for agentic execution.
 
 #### Dispatch rules
 
-1. `transform_id` present, `agent` absent → Operator-artifact execution path.
-2. `agent` present → task-agent dispatch; `params` and `agent_params` are merged; `workspace_id` and `cards` are injected into the merged params.
+1. `transform_id` present, `agent` absent → Operator-artifact execution path via `operation_dispatcher`.
+2. `agent` present → task-agent dispatch; `params` and `agent_params` are merged; `workspace_id` and `artifacts` are injected into the merged params.
 3. Neither present → LLM mode using `input`, `context`, `instructions`, and `capabilities` fields. Returns `{ "output": "<string>" }`.
+
+> **Removed:** `POST /agents/invoke` — superseded by the unified artifact invoke endpoint.
 
 ---
 

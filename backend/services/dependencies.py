@@ -23,9 +23,10 @@ from fastapi.security import (
 from arango.database import StandardDatabase
 
 from core.dependencies import get_arango_db
-from core.config import AUTHORITY_ISSUER
+from core import config
 from services.person_service import get_user_by_id  # now expects StandardDatabase
 from services.auth_service import verify_token, verify_api_key
+from db import arango as db_arango
 from db.arango import (
     get_active_grants_for_principal_resource as db_get_active_grants,
     get_active_grants_for_grantee as db_get_active_grants_for_grantee,
@@ -61,6 +62,8 @@ class AuthContext:
     api_key_entity: Optional[APIKeyEntity] = None       # full entity — needed by collection service
     server_id: Optional[str] = None                     # if auth was via server token
     actor: Optional[str] = None                         # delegation: acting server
+    authority: Optional[str] = None                     # issuer / authority identity
+    host_id: Optional[str] = None                       # host identity (platform instance)
     bearer_grant: Optional[GrantEntity] = None           # convenience: grant resolved from Bearer grant key
     target_artifact_id: Optional[str] = None             # artifact scoping from prefixed Bearer token ({id}:agc_xxx)
 
@@ -100,11 +103,11 @@ def _validate_aud_for_principal(payload: dict) -> None:
         if not aud:
             raise HTTPException(status_code=401, detail="Missing aud in delegation token")
     else:
-        if aud != AUTHORITY_ISSUER:
+        if aud != config.AUTHORITY_ISSUER:
             raise HTTPException(status_code=401, detail="Invalid token audience")
 
 
-def _check_grant_permission(grants: List[GrantEntity], action: str, resource_type: str = None, resource_id: str = None) -> bool:
+def _check_grant_permission(grants: List[GrantEntity], action: str, resource_id: str = None) -> bool:
     """Check if any allow-effect grant permits the requested action.
 
     Deny-effect grants are excluded — callers that need deny semantics
@@ -116,8 +119,6 @@ def _check_grant_permission(grants: List[GrantEntity], action: str, resource_typ
             continue
         if not getattr(grant, perm_attr, False):
             continue
-        if resource_type and getattr(grant, "resource_type", None) != resource_type:
-            continue
         if resource_id and getattr(grant, "resource_id", None) != resource_id:
             continue
         return True
@@ -126,7 +127,7 @@ def _check_grant_permission(grants: List[GrantEntity], action: str, resource_typ
 
 def _get_end_user_token_payload(token: str) -> dict:
     """Decode user-only JWT, rejecting API-key JWTs."""
-    payload = verify_token(token, expected_audience=AUTHORITY_ISSUER)
+    payload = verify_token(token, expected_audience=config.AUTHORITY_ISSUER)
     if not payload or "sub" not in payload:
         raise HTTPException(status_code=401, detail="Invalid or malformed token")
     if is_api_key_jwt_payload(payload):
@@ -207,6 +208,8 @@ def resolve_auth(
                 principal_type="server",
                 user_id=None,
                 server_id=str(payload.get("server_id")) if payload.get("server_id") else None,
+                authority=str(payload.get("authority", "")) or None,
+                host_id=str(payload.get("host_id", "")) or None,
             )
 
         if jwt_principal_type == "mcp_client":
@@ -217,11 +220,24 @@ def resolve_auth(
             )
 
         if jwt_principal_type == "delegation":
+            # All four identity-chain entities are required:
+            # User (sub), Server (act.sub), Authority (iss), Host (host_id)
+            d_sub = payload.get("sub")
+            d_act_sub = (payload.get("act") or {}).get("sub")
+            d_host = payload.get("host_id")
+            if not d_sub:
+                raise HTTPException(status_code=401, detail="Delegation token missing sub (user)")
+            if not d_act_sub:
+                raise HTTPException(status_code=401, detail="Delegation token missing act.sub (server)")
+            if not d_host:
+                raise HTTPException(status_code=401, detail="Delegation token missing host_id")
             return AuthContext(
-                principal_id=str(payload.get("sub", "")),
+                principal_id=str(d_sub),
                 principal_type="user",
-                user_id=str(payload.get("sub")) if payload.get("sub") else None,
-                actor=str(payload.get("act", {}).get("sub", "")) if payload.get("act") else None,
+                user_id=str(d_sub),
+                actor=str(d_act_sub),
+                authority=str(payload.get("iss", "")) or None,
+                host_id=str(d_host),
             )
 
         # Default: user JWT
@@ -317,7 +333,6 @@ def require_platform_admin(
         grants = db_get_active_grants(
             arango_db,
             grantee_id=auth.user_id,
-            resource_type="collection",
             resource_id=get_id(AUTHORITY_COLLECTION_SLUG),
         )
         if any(g.can_update and g.is_active() for g in grants):
@@ -332,41 +347,38 @@ def require_platform_admin(
 # Access check
 # ---------------------------------------------------------------------------
 
-# Map action names to CRUDIASO grant flag attributes.
-# Actions whose grants cascade from a parent collection to direct child artifacts.
-# Self-only actions (update, invoke, own) require a direct grant on the artifact.
-_CASCADING_ACTIONS: frozenset = frozenset({"read", "create", "add", "delete", "search"})
-
+# Map action names to CRUDEASIO grant flag attributes.
 _ACTION_FLAG_MAP = {
     "create": "can_create",
     "read": "can_read",
     "update": "can_update",
     "delete": "can_delete",
+    "evict": "can_evict",
     "invoke": "can_invoke",
     "add": "can_add",
-    "search": "can_search",
-    "own": "can_own",
+    "share": "can_share",
+    "admin": "can_admin",
 }
 
+# Maximum origin-chain depth for grant inheritance (bounded traversal).
+_MAX_ORIGIN_DEPTH = 10
 
-def _synthetic_owner_grant(resource_id: str, user_id: str) -> GrantEntity:
-    """Return a synthetic full-CRUDIASO grant for the artifact owner."""
-    return GrantEntity(
-        resource_type="artifact",
-        resource_id=resource_id,
-        grantee_type="user",
-        grantee_id=user_id,
-        granted_by=user_id,
-        can_create=True,
-        can_read=True,
-        can_update=True,
-        can_delete=True,
-        can_invoke=True,
-        can_add=True,
-        can_search=True,
-        can_own=True,
-        state="active",
-    )
+
+def _check_grants_for_action(
+    grants: list,
+    flag_attr: str,
+) -> Optional[GrantEntity]:
+    """Check a list of grants for deny-before-allow on a single flag.
+
+    Returns the first allowing grant, or ``None``. Raises 404 on deny.
+    """
+    for g in grants:
+        if getattr(g, "effect", "allow") == "deny" and getattr(g, flag_attr, False):
+            raise HTTPException(status_code=404, detail="Not found")
+    for g in grants:
+        if getattr(g, "effect", "allow") != "deny" and getattr(g, flag_attr, False):
+            return g
+    return None
 
 
 def check_access(
@@ -377,86 +389,64 @@ def check_access(
 ) -> GrantEntity:
     """Verify *auth* has permission to perform *action* on *artifact_id*.
 
-    Unified artifact store: *artifact_id* is either a Collection doc key
-    (workspace or otherwise) or an Artifact doc key.
+    Light-cone grant traversal: walks origin edges upward from the
+    target artifact, checking grants at each level. The ``propagate``
+    mask on each edge controls which actions inherit through.
 
     Resolution flow:
-      1. Resolve id → collection_id and determine resource_type
-      2. Owner fast-path on the collection (full CRUDIASO)
-      3. Direct grants on the target — deny checked before allow
-      4. If target is an artifact and action cascades: check parent collection grants
-         (read, create, add, delete, search cascade; update, invoke, own do not)
+      1. Fetch artifact doc
+      2. Direct grants on the target (deny before allow)
+      3. Walk origin edges upward (max ``_MAX_ORIGIN_DEPTH``). At each
+         parent: intersect edge ``propagate`` mask with requested action;
+         if allowed, check grants on that parent.
+
+    Note: created_by is provenance only — it does NOT imply ownership or
+    access. Access is granted exclusively through explicit GrantEntity records.
     """
     flag_attr = _ACTION_FLAG_MAP.get(action)
     if not flag_attr:
         raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
 
-    # --- Resolve target: collection or artifact ---
-    # Container-as-artifact: all containers are in the artifacts table.
-    # A container doc has no collection_id; a regular artifact has one.
-    art_doc = None
-    collection_id: Optional[str] = None
     try:
         doc = arango_db.collection("artifacts").get(artifact_id)
     except Exception:
         doc = None
-
     if not doc:
         raise HTTPException(status_code=404, detail="Not found")
-
-    if not doc.get("collection_id"):
-        # No collection_id → this IS a container (workspace or collection)
-        collection_id = artifact_id
-        collection_doc = doc
-        resource_type = "collection"
-    else:
-        # Regular artifact — look up its parent container
-        art_doc = doc
-        collection_id = doc.get("collection_id")
-        try:
-            collection_doc = arango_db.collection("artifacts").get(collection_id)
-        except Exception:
-            collection_doc = None
-        if not collection_doc:
-            raise HTTPException(status_code=404, detail="Not found")
-        resource_type = "artifact"
-
-    # --- Owner fast-path on the collection ---
-    owner_id = collection_doc.get("created_by")
-    if owner_id and auth.user_id and owner_id == auth.user_id:
-        return _synthetic_owner_grant(artifact_id, auth.user_id)
 
     if not auth.user_id:
         raise HTTPException(status_code=404, detail="Not found")
 
     # --- Direct grants on the target (deny before allow) ---
     direct_grants = db_get_active_grants(
-        arango_db,
-        grantee_id=auth.user_id,
-        resource_type=resource_type,
+        arango_db, grantee_id=auth.user_id,
         resource_id=artifact_id,
     )
-    for g in direct_grants:
-        if getattr(g, "effect", "allow") == "deny" and getattr(g, flag_attr, False):
-            raise HTTPException(status_code=404, detail="Not found")
-    for g in direct_grants:
-        if getattr(g, "effect", "allow") != "deny" and getattr(g, flag_attr, False):
-            return g
+    result = _check_grants_for_action(direct_grants, flag_attr)
+    if result:
+        return result
 
-    # --- Parent collection grants (cascading actions only) ---
-    if art_doc and action in _CASCADING_ACTIONS:
+    # --- Light-cone: walk origin edges upward ---
+    cursor_id = doc.get("root_id") or artifact_id
+    for _ in range(_MAX_ORIGIN_DEPTH):
+        parent = db_arango.get_origin_parent(arango_db, cursor_id)
+        if parent is None:
+            break
+        parent_id, propagate_mask = parent
+
+        # Check if the action is allowed through this edge
+        if propagate_mask is not None and action not in propagate_mask:
+            break  # Edge blocks this action — stop traversal
+
         parent_grants = db_get_active_grants(
-            arango_db,
-            grantee_id=auth.user_id,
-            resource_type="collection",
-            resource_id=collection_id,
+            arango_db, grantee_id=auth.user_id,
+            resource_id=parent_id,
         )
-        for g in parent_grants:
-            if getattr(g, "effect", "allow") == "deny" and getattr(g, flag_attr, False):
-                raise HTTPException(status_code=404, detail="Not found")
-        for g in parent_grants:
-            if getattr(g, "effect", "allow") != "deny" and getattr(g, flag_attr, False):
-                return g
+        result = _check_grants_for_action(parent_grants, flag_attr)
+        if result:
+            return result
+
+        cursor_id = parent_id
 
     raise HTTPException(status_code=404, detail="Not found")
 
