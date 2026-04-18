@@ -205,16 +205,29 @@ try {
         git rm -rf --cached --quiet --ignore-unmatch $path 2>&1 | Out-Null
     }
 
-    # --- Commit ---
-    Write-Host "Committing..." -ForegroundColor Gray
-    git commit -m $Message --quiet 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "ERROR: Commit failed (maybe nothing to commit?)." -ForegroundColor Red
+    # --- Commit (skip cleanly when there is nothing new to commit) ---
+    $hasStagedChanges = $false
+    git diff --cached --quiet 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 1) {
+        $hasStagedChanges = $true
+    } elseif ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: Failed to inspect staged changes before commit." -ForegroundColor Red
         exit 1
     }
 
-    $commitHash = (git rev-parse --short HEAD 2>&1).Trim()
-    Write-Host "  Created commit: $commitHash" -ForegroundColor Green
+    if ($hasStagedChanges) {
+        Write-Host "Committing..." -ForegroundColor Gray
+        git commit -m $Message --quiet 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: Commit failed." -ForegroundColor Red
+            exit 1
+        }
+        $commitHash = (git rev-parse --short HEAD 2>&1).Trim()
+        Write-Host "  Created commit: $commitHash" -ForegroundColor Green
+    } else {
+        $commitHash = (git rev-parse --short HEAD 2>&1).Trim()
+        Write-Host "  No content changes to commit; publishing existing $PublicRemote/$PublicBranch tip ($commitHash)." -ForegroundColor DarkYellow
+    }
 
     # --- Push ---
     if ($DryRun) {
