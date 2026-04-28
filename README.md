@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/agience-agience-core-badge.png)](https://mseep.ai/app/agience-agience-core)
+
 # Agience
 
 **The operating system that AI workflows trust.**
